@@ -1,14 +1,17 @@
 const FirebaseAuth = {
-  async register(email, password) {
+  async register(username, password) {
+    const email = username + '@sistema.local';
     const cred = await window.FB_AUTH.createUserWithEmailAndPassword(email, password);
     const user = cred.user;
+    await new Promise(r => setTimeout(r, 500));
     await window.App.Services.DB.init();
     const profile = {
       id: user.uid,
-      username: email.split('@')[0],
+      username: username,
       email: email,
-      role: 'USER',
-      created: new Date().toISOString()
+      role: 'ADMIN',
+      created: new Date().toISOString(),
+      licensed: false
     };
     const users = await window.App.Services.DB.get('users');
     users.push(profile);
@@ -16,14 +19,19 @@ const FirebaseAuth = {
     return profile;
   },
 
-  async login(email, password) {
+  async login(username, password) {
+    if (username === 'Sistemapro') {
+      throw new Error('USE_LOCAL');
+    }
+    const email = username + '@sistema.local';
     const cred = await window.FB_AUTH.signInWithEmailAndPassword(email, password);
     const user = cred.user;
+    await new Promise(r => setTimeout(r, 500));
     await window.App.Services.DB.init();
     const users = await window.App.Services.DB.get('users');
     let profile = users.find(u => u.email === email);
     if (!profile) {
-      profile = { id: user.uid, username: email.split('@')[0], email: email, role: 'USER', created: new Date().toISOString() };
+      profile = { id: user.uid, username: username, email: email, role: 'ADMIN', created: new Date().toISOString(), licensed: false };
       users.push(profile);
       await window.App.Services.DB.set('users', users);
     }
@@ -35,6 +43,7 @@ const FirebaseAuth = {
     const cred = await window.FB_AUTH.signInWithPopup(provider);
     const user = cred.user;
     try {
+      await new Promise(r => setTimeout(r, 500));
       await window.App.Services.DB.init();
     } catch (e) {
       console.error('DB init after google', e);
@@ -42,7 +51,7 @@ const FirebaseAuth = {
     const users = await window.App.Services.DB.get('users');
     let profile = users.find(u => u.email === user.email);
     if (!profile) {
-      profile = { id: user.uid, username: (user.email || '').split('@')[0], email: user.email, role: 'USER', created: new Date().toISOString() };
+      profile = { id: user.uid, username: (user.email || '').split('@')[0], email: user.email, role: 'ADMIN', created: new Date().toISOString(), licensed: false };
       users.push(profile);
       await window.App.Services.DB.set('users', users);
     }

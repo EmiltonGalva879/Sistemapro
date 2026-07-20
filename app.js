@@ -29,38 +29,142 @@ let state = {
   loginTab: 'login',
   loading: true,
   previewInvoicePdfUrl: '',
-  salesListHtml: ''
+  salesListHtml: '',
+  registerLicenseOk: false
 };
 
-async function login(email, password) {
+async function login(username, password) {
   try {
     state.loginError = '';
-    const profile = await window.App.Services.FirebaseAuth.login(email, password);
-    state.user = profile;
-    state.page = 'sales';
+    
+    if (username === 'Sistemapro' && password === 'Sistemapro1532') {
+      state.user = {
+        id: '1',
+        username: 'Sistemapro',
+        email: 'Sistemapro@sistema.local',
+        role: 'ADMIN',
+        licensed: true,
+        created: new Date().toISOString()
+      };
+      state.page = 'sales';
+      render();
+      return true;
+    }
+    
+    const users = await window.App.Services.DB.get('users');
+    const localUser = users.find(u => u.username === username);
+    
+    if (localUser) {
+      if (localUser.password === password) {
+        state.user = localUser;
+        state.page = 'sales';
+        render();
+        return true;
+      } else {
+        state.loginError = 'Contraseña incorrecta';
+        render();
+        return false;
+      }
+    }
+    
+    state.loginError = 'Usuario no encontrado';
     render();
-    return true;
+    return false;
   } catch (e) {
-    state.loginError = mapAuthError(e);
+    state.loginError = 'Error de conexión. Intenta nuevamente.';
     render();
     return false;
   }
 }
 
+async function validateRegisterLicense(key) {
+  key = (key || '').trim();
+  if (!key) { state.loginError = 'Ingrese la clave de licencia'; render(); return; }
+  try {
+    let licenses = await window.App.Services.DB.get('licenses');
+    if (!licenses || licenses.length === 0) {
+      const defaults = [
+        { key: 'PRO-2024-DEMO-0001', used: false },
+        { key: 'PRO-2024-DEMO-0002', used: false },
+        { key: 'PRO-2024-DEMO-0003', used: false }
+      ];
+      await window.App.Services.DB.set('licenses', defaults);
+      licenses = defaults;
+    }
+    const license = licenses.find(l => l.key === key);
+    if (!license) {
+      state.loginError = 'Clave de licencia inválida';
+      render();
+      return;
+    }
+    if (license.used) {
+      state.loginError = 'Esta licencia ya fue utilizada';
+      render();
+      return;
+    }
+    state.loginError = '';
+    state.registerLicenseOk = true;
+    state.registerLicenseKey = key;
+    render();
+  } catch (e) {
+    state.loginError = 'Error al validar licencia';
+    render();
+  }
+}
+
 async function registerUser(username, password, confirmPassword) {
+  const licenseKey = state.registerLicenseKey || '';
   username = (username || '').trim();
   if (!username || !password) { state.loginError = 'Usuario y contraseña son obligatorios'; render(); return false; }
+  if (!licenseKey) { state.loginError = 'Falta la clave de licencia'; render(); return false; }
   if (password.length < 4) { state.loginError = 'La contraseña debe tener al menos 4 caracteres'; render(); return false; }
   if (password !== confirmPassword) { state.loginError = 'Las contraseñas no coinciden'; render(); return false; }
   try {
     state.loginError = '';
-    const profile = await window.App.Services.FirebaseAuth.register(username, password);
+    const licenses = await window.App.Services.DB.get('licenses');
+    const license = licenses.find(l => l.key === licenseKey);
+    if (!license) {
+      state.loginError = 'Clave de licencia inválida';
+      render();
+      return false;
+    }
+    if (license.used) {
+      state.loginError = 'Esta licencia ya fue utilizada';
+      render();
+      return false;
+    }
+    const users = await window.App.Services.DB.get('users');
+    const exists = users.find(u => u.username === username);
+    if (exists) {
+      state.loginError = 'Este nombre de usuario ya está registrado';
+      render();
+      return false;
+    }
+    const profile = {
+      id: 'U-' + Date.now(),
+      username: username,
+      email: username + '@sistema.local',
+      password: password,
+      role: 'ADMIN',
+      created: new Date().toISOString(),
+      licenseKey: licenseKey,
+      licensed: true,
+      createdBy: '1'
+    };
+    users.push(profile);
+    await window.App.Services.DB.set('users', users);
+    license.used = true;
+    license.usedBy = String(profile.id);
+    license.usedAt = new Date().toISOString();
+    await window.App.Services.DB.set('licenses', licenses);
     state.user = profile;
     state.page = 'sales';
+    state.registerLicenseOk = false;
+    state.registerLicenseKey = '';
     render();
     return true;
   } catch (e) {
-    state.loginError = mapAuthError(e);
+    state.loginError = e.message || 'Error al registrar';
     render();
     return false;
   }
@@ -84,6 +188,8 @@ async function logout() {
   state.cart = [];
   state.page = 'login';
   state.loginError = '';
+  state.registerLicenseOk = false;
+  state.registerLicenseKey = '';
   render();
 }
 
@@ -91,6 +197,13 @@ async function loginWithGoogle() {
   try {
     state.loginError = '';
     const profile = await window.App.Services.FirebaseAuth.loginWithGoogle();
+    const licensed = profile.licensed !== false;
+    if (!licensed) {
+      state.user = profile;
+      state.page = 'activate-license';
+      render();
+      return;
+    }
     state.user = profile;
     state.page = 'sales';
     render();
@@ -100,14 +213,115 @@ async function loginWithGoogle() {
   }
 }
 
+async function activateLicense(key) {
+  key = (key || '').trim();
+  if (!key) { state.loginError = 'Ingrese la clave de licencia'; render(); return false; }
+  try {
+    let licenses = await window.App.Services.DB.get('licenses');
+    if (!licenses || licenses.length === 0) {
+      const defaults = [
+        { key: 'PRO-2024-DEMO-0001', used: false },
+        { key: 'PRO-2024-DEMO-0002', used: false },
+        { key: 'PRO-2024-DEMO-0003', used: false }
+      ];
+      await window.App.Services.DB.set('licenses', defaults);
+      licenses = defaults;
+    }
+    const license = licenses.find(l => l.key === key);
+    if (!license) {
+      state.loginError = 'Clave de licencia inválida';
+      render();
+      return false;
+    }
+    if (license.used && license.usedBy !== String(state.user.id)) {
+      state.loginError = 'Esta licencia ya fue utilizada por otra empresa';
+      render();
+      return false;
+    }
+    if (!license.used) {
+      license.used = true;
+      license.usedBy = String(state.user.id);
+      license.usedAt = new Date().toISOString();
+      await window.App.Services.DB.set('licenses', licenses);
+    }
+    const users = await window.App.Services.DB.get('users');
+    let idx = users.findIndex(u => u.id === state.user.id);
+    if (idx < 0) {
+      users.push({
+        id: state.user.id,
+        username: state.user.username,
+        email: state.user.email || '',
+        role: state.user.role || 'ADMIN',
+        created: new Date().toISOString(),
+        licenseKey: key,
+        licensed: true
+      });
+      idx = users.length - 1;
+    } else {
+      users[idx].licenseKey = key;
+      users[idx].licensed = true;
+    }
+    await window.App.Services.DB.set('users', users);
+    state.user = users[idx];
+    state.page = 'sales';
+    state.loginError = '';
+    state.registerLicenseOk = false;
+    state.registerLicenseKey = '';
+    render();
+    return true;
+  } catch (e) {
+    console.error('activateLicense error', e);
+    state.loginError = e.message || 'Error al activar licencia';
+    render();
+    return false;
+  }
+}
+
+function getVisibleOwners(userId) {
+  const owners = new Set([String(userId)]);
+  const users = getUsers();
+  let current = String(userId);
+  let iterations = 0;
+  while (iterations < 100) {
+    if (current === '1') break;
+    const creator = users.find(u => String(u.id) === current && u.createdBy);
+    if (!creator) break;
+    if (String(creator.createdBy) === String(userId)) break;
+    owners.add(String(creator.createdBy));
+    current = String(creator.createdBy);
+    iterations++;
+  }
+  return owners;
+}
+
+function getVisibleUsers() {
+  if (!state.user) return [];
+  const users = getUsers();
+  if (String(state.user.id) === '1') return users;
+  return users.filter(u => String(u.createdBy) === String(state.user.id) || String(u.id) === String(state.user.id));
+}
+
+function getUserCreator(userId) {
+  const users = getUsers();
+  const user = users.find(u => String(u.id) === String(userId));
+  if (!user || !user.createdBy) return 'Sistema';
+  const creator = users.find(u => String(u.id) === String(user.createdBy));
+  return creator ? creator.username : 'Sistema';
+}
+
 function getProducts() {
   const products = DB.get('products');
-  if (!state.search) return products;
-  return products.filter(p => p.name.toLowerCase().includes(state.search.toLowerCase()) || p.barcode.includes(state.search));
+  if (!state.user) return products;
+  const visibleOwners = getVisibleOwners(state.user.id);
+  let filtered = products.filter(p => visibleOwners.has(String(p.createdBy)));
+  if (state.search) {
+    filtered = filtered.filter(p => p.name.toLowerCase().includes(state.search.toLowerCase()) || p.barcode.includes(state.search));
+  }
+  return filtered;
 }
 
 function getLowStock() {
-  return DB.get('products').filter(p => p.stock <= p.minStock);
+  return getProducts().filter(p => p.stock <= p.minStock);
 }
 
 function saveProduct(product) {
@@ -118,6 +332,7 @@ function saveProduct(product) {
   } else {
     product.id = Date.now();
     product.barcode = product.barcode || 'S' + Date.now().toString().slice(-10);
+    product.createdBy = String(state.user.id);
     products.push(product);
   }
   DB.set('products', products);
@@ -132,6 +347,7 @@ function saveQuickProduct(name, price, stock, minStock, barcode) {
     stock: parseInt(stock) || 0,
     minStock: parseInt(minStock) || 5,
     barcode: barcode,
+    createdBy: String(state.user.id),
     created: new Date().toISOString()
   };
   products.push(newProduct);
@@ -147,9 +363,19 @@ function deleteProduct(id) {
 }
 
 function getSales() { return DB.get('sales'); }
+function getVisibleSales() {
+  const sales = getSales();
+  if (!state.user) return sales;
+  if (String(state.user.id) === '1') return sales;
+  const visibleOwners = getVisibleOwners(state.user.id);
+  return sales.filter(s => {
+    const owner = String(s.userId || s.user);
+    return owner === String(state.user.id) || visibleOwners.has(owner);
+  });
+}
 function getTodaySales() {
   const today = new Date().toISOString().split('T')[0];
-  return getSales().filter(s => s.created.startsWith(today));
+  return getVisibleSales().filter(s => s.created.startsWith(today));
 }
 
 function verifyPassword(pw) {
@@ -166,17 +392,20 @@ function promptDeleteSale(id) {
 }
 
 function deleteSale(id) {
-  const sales = getSales();
+  const sales = getVisibleSales();
   const sale = sales.find(s => s.id === id);
   if (!sale) return;
   if (!confirm('¿Eliminar venta #' + id + '?')) return;
   const products = DB.get('products');
+  const visibleOwners = getVisibleOwners(state.user.id);
   sale.items.forEach(item => {
     const p = products.find(prod => prod.id === item.id);
-    if (p) p.stock += item.quantity;
+    if (p && visibleOwners.has(String(p.createdBy))) {
+      p.stock += item.quantity;
+    }
   });
   DB.set('products', products);
-  DB.set('sales', sales.filter(s => s.id !== id));
+  DB.set('sales', getSales().filter(s => s.id !== id));
   alert('Venta eliminada');
   render();
 }
@@ -195,7 +424,9 @@ function updateCartQty(id, qty) {
   if (!item) return;
   if (qty > 0) {
     const product = DB.get('products').find(p => p.id === id);
-    item.quantity = product ? Math.min(qty, product.stock) : qty;
+    if (product && (String(product.createdBy) === String(state.user.id) || getVisibleOwners(state.user.id).has(String(product.createdBy)))) {
+      item.quantity = product ? Math.min(qty, product.stock) : qty;
+    }
   } else if (qty <= 0) {
     state.cart = state.cart.filter(i => i.id !== id);
   }
@@ -298,15 +529,19 @@ function completeSale(paymentType, customerData) {
     interest: interest,
     paymentType: modoPago,
     user: state.user.username,
+    userId: String(state.user.id),
     customerName: customerData.customerName || '',
     customerPhone: customerData.customerPhone || '',
     notes: customerData.notes || '',
     created: new Date().toISOString()
   };
   const products = DB.get('products');
+  const visibleOwners = getVisibleOwners(state.user.id);
   state.cart.forEach(item => {
     const product = products.find(p => p.id === item.id);
-    if (product) product.stock -= item.quantity;
+    if (product && visibleOwners.has(String(product.createdBy))) {
+      product.stock -= item.quantity;
+    }
   });
   DB.set('products', products);
   DB.set('sales', [...getSales(), sale]);
@@ -358,6 +593,7 @@ function makeQuote(customerData) {
     items: state.cart.map(i => ({ id: i.id, name: i.name, barcode: i.barcode, quantity: i.quantity, price: i.price, subtotal: i.price * i.quantity })),
     total: getCartTotal(),
     user: state.user.username,
+    userId: String(state.user.id),
     customerName: customerData.customerName || '',
     customerPhone: customerData.customerPhone || '',
     notes: customerData.notes || '',
@@ -400,6 +636,8 @@ function saveUser(user) {
     if (idx >= 0) users[idx] = { ...users[idx], ...user };
   } else {
     user.id = Date.now();
+    user.createdBy = String(state.user.id);
+    user.licensed = true;
     users.push(user);
   }
   DB.set('users', users);
@@ -462,15 +700,15 @@ function testCashDrawer() {
 }
 
 function getStats() {
-  const sales = getSales();
+  const sales = getVisibleSales();
   const today = new Date().toISOString().split('T')[0];
   const todaySales = sales.filter(s => s.created.startsWith(today));
-  const fiados = getFiados();
+  const fiados = getVisibleFiados();
   const pendingFiados = fiados.filter(f => f.status === 'pending');
   const paidFiados = fiados.filter(f => f.status === 'paid');
   
   return {
-    totalProducts: DB.get('products').length,
+    totalProducts: getProducts().length,
     todaySales: todaySales.reduce((sum, s) => sum + s.total, 0),
     totalUsers: DB.get('users').length,
     pendingFiados: pendingFiados.reduce((sum, f) => sum + (f.balance || f.total), 0),
@@ -856,6 +1094,10 @@ function render() {
     app.innerHTML = renderLogin();
     return;
   }
+  if (state.page === 'activate-license') {
+    app.innerHTML = renderActivateLicense();
+    return;
+  }
   const lowStock = getLowStock();
   const showAlert = lowStock.length > 0 && !state.alertDismissed;
   app.innerHTML = `
@@ -868,7 +1110,12 @@ function render() {
           <div class="nav-link ${state.page === 'products' ? 'active' : ''}" onclick="state.page='products';state.testResult='';render()">📦 Productos</div>
            <div class="nav-link ${state.page === 'reports' ? 'active' : ''}" onclick="state.page='reports';state.testResult='';render()">📈 Reportes</div>
            <div class="nav-link ${state.page === 'dashboard' ? 'active' : ''}" onclick="state.page='dashboard';state.testResult='';render()">📊 Dashboard</div>
-          ${state.user.role === 'ADMIN' ? `<div class="nav-link ${state.page === 'users' ? 'active' : ''}" onclick="state.page='users';state.testResult='';render()">👥 Usuarios</div>` : ''}
+          ${state.user.role === 'ADMIN' ? `
+            <div class="nav-link ${state.page === 'users' ? 'active' : ''}" onclick="state.page='users';state.testResult='';render()">👥 Usuarios</div>
+          ` : ''}
+          ${String(state.user.id) === '1' && state.user.username === 'Sistemapro' ? `
+            <div class="nav-link ${state.page === 'licenses' ? 'active' : ''}" onclick="state.page='licenses';state.testResult='';render()">🔑 Licencias</div>
+          ` : ''}
         </nav>
         <div class="user-info">
           <div class="avatar">${state.user.username[0].toUpperCase()}</div>
@@ -917,8 +1164,8 @@ function renderLowStockAlert(lowStock) {
 function renderLogin() {
   const tabs = `
     <div class="login-tabs">
-      <div class="login-tab ${state.loginTab !== 'register' ? 'active' : ''}" onclick="state.loginTab='login';state.loginError='';render()">Iniciar Sesión</div>
-      <div class="login-tab ${state.loginTab === 'register' ? 'active' : ''}" onclick="state.loginTab='register';state.loginError='';render()">Registrarse</div>
+      <button class="login-tab ${state.loginTab === 'login' ? 'active' : ''}" onclick="state.loginTab='login';state.loginError='';state.registerLicenseOk=false;state.registerLicenseKey='';render()">Iniciar Sesión</button>
+      <button class="login-tab ${state.loginTab === 'register' ? 'active' : ''}" onclick="state.loginTab='register';state.loginError='';state.registerLicenseOk=false;state.registerLicenseKey='';render()">Registrarse</button>
     </div>
   `;
 
@@ -926,8 +1173,8 @@ function renderLogin() {
     <form onsubmit="event.preventDefault();login(this.u.value,this.p.value)">
       ${state.loginError ? '<div style="background:#fee2e2;color:#dc2626;padding:12px;border-radius:8px;margin-bottom:15px;text-align:center;font-weight:600">' + state.loginError + '</div>' : ''}
       <div class="form-group">
-        <label>Correo electrónico</label>
-        <input class="form-control" name="u" type="email" placeholder="correo@ejemplo.com" required>
+        <label>Usuario</label>
+        <input class="form-control" name="u" type="text" placeholder="nombre de usuario" required>
       </div>
       <div class="form-group">
         <label>Contraseña</label>
@@ -935,51 +1182,38 @@ function renderLogin() {
       </div>
       <button type="submit" class="btn btn-primary" style="width:100%">Iniciar Sesión</button>
     </form>
-    <div style="margin-top:18px">
-      <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
-        <div style="flex:1;height:1px;background:#e2e8f0"></div>
-        <span style="font-size:12px;color:#64748b">o</span>
-        <div style="flex:1;height:1px;background:#e2e8f0"></div>
-      </div>
-      <button type="button" class="btn google-btn" style="width:100%" onclick="loginWithGoogle()">
-        <span style="display:inline-flex;align-items:center;gap:8px">
-          <svg width="18" height="18" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>
-          Continuar con Google
-        </span>
-      </button>
-    </div>
-  `;
+`;
 
-  const registerForm = `
+  const registerForm = state.registerLicenseOk ? `
     <form onsubmit="event.preventDefault();registerUser(this.ru.value,this.rp.value,this.rp2.value)">
       ${state.loginError ? '<div style="background:#fee2e2;color:#dc2626;padding:12px;border-radius:8px;margin-bottom:15px;text-align:center;font-weight:600">' + state.loginError + '</div>' : ''}
       <div class="form-group">
-        <label>Correo electrónico</label>
-        <input class="form-control" name="ru" type="email" placeholder="correo@ejemplo.com" required>
+        <label>Usuario</label>
+        <input class="form-control" name="ru" type="text" placeholder="nombre de usuario" required>
       </div>
       <div class="form-group">
         <label>Contraseña</label>
-        <input type="password" class="form-control" name="rp" placeholder="Mínimo 6 caracteres" required>
+        <input type="password" class="form-control" name="rp" placeholder="Mínimo 4 caracteres" required>
       </div>
       <div class="form-group">
         <label>Confirmar contraseña</label>
         <input type="password" class="form-control" name="rp2" placeholder="Repite la contraseña" required>
       </div>
-      <button type="submit" class="btn btn-primary" style="width:100%">Crear cuenta</button>
-    </form>
-    <div style="margin-top:18px">
-      <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px">
-        <div style="flex:1;height:1px;background:#e2e8f0"></div>
-        <span style="font-size:12px;color:#64748b">o</span>
-        <div style="flex:1;height:1px;background:#e2e8f0"></div>
+      <div style="background:#f0f9ff;border:1px solid #bae6fd;color:#0369a1;padding:10px 12px;border-radius:8px;margin-bottom:15px;font-size:13px">
+        Licencia validada: <strong>${state.registerLicenseKey}</strong>
       </div>
-      <button type="button" class="btn google-btn" style="width:100%" onclick="loginWithGoogle()">
-        <span style="display:inline-flex;align-items:center;gap:8px">
-          <svg width="18" height="18" viewBox="0 0 48 48"><path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/><path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/><path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/><path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/></svg>
-          Continuar con Google
-        </span>
-      </button>
-    </div>
+      <button type="submit" class="btn btn-primary" style="width:100%">Crear cuenta</button>
+      <button type="button" class="btn btn-secondary" style="width:100%;margin-top:10px" onclick="state.registerLicenseOk=false;state.registerLicenseKey='';state.loginError='';render()">Cambiar licencia</button>
+    </form>
+  ` : `
+    <form onsubmit="event.preventDefault();validateRegisterLicense(this.lk.value)">
+      ${state.loginError ? '<div style="background:#fee2e2;color:#dc2626;padding:12px;border-radius:8px;margin-bottom:15px;text-align:center;font-weight:600">' + state.loginError + '</div>' : ''}
+      <div class="form-group">
+        <label>Clave de Licencia</label>
+        <input class="form-control" name="lk" type="text" placeholder="PRO-2024-XXXX-XXXX" required>
+      </div>
+      <button type="submit" class="btn btn-primary" style="width:100%">Validar licencia</button>
+    </form>
   `;
 
   return `
@@ -996,7 +1230,42 @@ function renderLogin() {
   `;
 }
 
+function renderActivateLicense() {
+  return `
+    <div class="login-container">
+      <div class="login-card">
+        <div class="login-logo">
+          <h1>${(localStorage.getItem('salesstock_bizname') || 'SalesStock').split(' ')[0]}<span>Pro</span></h1>
+          <p>Activar Licencia</p>
+        </div>
+        ${state.loginError ? '<div style="background:#fee2e2;color:#dc2626;padding:12px;border-radius:8px;margin-bottom:15px;text-align:center;font-weight:600">' + state.loginError + '</div>' : ''}
+        <p style="margin-bottom:20px;color:#64748b;text-align:center">Ingrese la clave de licencia de su empresa para activar todas las funciones.</p>
+        <form onsubmit="event.preventDefault();activateLicense(this.lk.value)">
+          <div class="form-group">
+            <label>Clave de Licencia</label>
+            <input class="form-control" name="lk" type="text" placeholder="PRO-2024-XXXX-XXXX" required>
+          </div>
+          <button type="submit" class="btn btn-primary" style="width:100%">Activar Licencia</button>
+        </form>
+        <div style="margin-top:18px;text-align:center">
+          <button class="btn btn-secondary" style="width:100%" onclick="logout()">Cerrar Sesión</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
 function getFiados() { return DB.get('fiados'); }
+function getVisibleFiados() {
+  const fiados = getFiados();
+  if (!state.user) return fiados;
+  if (String(state.user.id) === '1') return fiados;
+  const visibleOwners = getVisibleOwners(state.user.id);
+  return fiados.filter(f => {
+    const owner = String(f.userId || f.user);
+    return owner === String(state.user.id) || visibleOwners.has(owner);
+  });
+}
 
 function saveFiado(fiado) {
   const fiados = DB.get('fiados');
@@ -1048,9 +1317,12 @@ function createFiadoFromCart(customerName, customerPhone, notes) {
   
   // Decrease stock
   const products = DB.get('products');
+  const visibleOwners = getVisibleOwners(state.user.id);
   state.cart.forEach(item => {
     const product = products.find(p => p.id === item.id);
-    if (product) product.stock -= item.quantity;
+    if (product && visibleOwners.has(String(product.createdBy))) {
+      product.stock -= item.quantity;
+    }
   });
   DB.set('products', products);
   
@@ -1071,7 +1343,8 @@ function createFiadoFromCart(customerName, customerPhone, notes) {
     balance: total,
     payments: [],
     status: 'pending',
-    user: state.user.username
+    user: state.user.username,
+    userId: String(state.user.id)
   };
   
   saveFiado(fiado);
@@ -1083,8 +1356,8 @@ function createFiadoFromCart(customerName, customerPhone, notes) {
 }
 
 function renderFiados() {
-  const fiados = getFiados().filter(f => f.status === 'pending');
-  const paidFiados = getFiados().filter(f => f.status === 'paid');
+  const fiados = getVisibleFiados().filter(f => f.status === 'pending');
+  const paidFiados = getVisibleFiados().filter(f => f.status === 'paid');
   
   return `
     <div class="header"><h1>Creditos</h1><button class="btn btn-primary" onclick="state.modal={type:'newFiado'};render()">+ Nuevo Credito</button></div>
@@ -1164,17 +1437,20 @@ function promptDeleteFiado(id) {
 }
 
 function deleteFiado(id) {
-  const fiados = getFiados();
+  const fiados = getVisibleFiados();
   const fiado = fiados.find(f => f.id === id);
   if (!fiado) return;
   if (!confirm('¿Eliminar credito de ' + (fiado.customerName || 'Cliente') + '? Esta acción no se puede deshacer.')) return;
   const products = DB.get('products');
+  const visibleOwners = getVisibleOwners(state.user.id);
   fiado.items.forEach(item => {
     const p = products.find(prod => prod.id === item.id);
-    if (p) p.stock += item.quantity;
+    if (p && visibleOwners.has(String(p.createdBy))) {
+      p.stock += item.quantity;
+    }
   });
   DB.set('products', products);
-  DB.set('fiados', fiados.filter(f => f.id !== id));
+  DB.set('fiados', getFiados().filter(f => f.id !== id));
   alert('Credito eliminado');
   render();
 }
@@ -1409,7 +1685,12 @@ function renderPage() {
     case 'dashboard': return renderDashboard();
     case 'products': return renderProducts();
     case 'sales': return renderSales();
-    case 'users': return renderUsers();
+    case 'users': 
+      if (state.user.role !== 'ADMIN') return '<div class="empty">Acceso denegado</div>'; 
+      return renderUsers();
+    case 'licenses': 
+      if (String(state.user.id) !== '1' || state.user.username !== 'Sistemapro') return '<div class="empty">Acceso denegado</div>'; 
+      return renderLicenses();
     case 'reports': return renderReports();
     case 'fiados': return renderFiados();
     default: return renderDashboard();
@@ -1418,7 +1699,7 @@ function renderPage() {
 
 function renderDashboard() {
   const stats = getStats();
-  const recent = getSales().slice(-10).reverse();
+  const recent = getVisibleSales().slice(-10).reverse();
   return `
     <div class="header"><h1>Dashboard</h1></div>
     <div class="stats">
@@ -1438,9 +1719,9 @@ function renderDashboard() {
 
 function previewSaleInvoice(saleId) {
   try {
-    const sale = getSales().find(s => s.id === saleId);
+    const sale = getVisibleSales().find(s => s.id === saleId);
     if (!sale) {
-      alert('Venta no encontrada');
+      alert('Venta no encontrada o no autorizada');
       return;
     }
     const printWin = window.open('', '_blank', 'width=800,height=600');
@@ -1477,7 +1758,7 @@ function printPreviewInvoice() {
 }
 
 function showAllSalesModal() {
-  state.salesListHtml = buildSalesListHtml(getSales());
+  state.salesListHtml = buildSalesListHtml(getVisibleSales());
   render();
 }
 
@@ -1709,7 +1990,9 @@ function renderSales() {
 function addProdById(id) {
   const products = DB.get('products');
   const p = products.find(x => x.id === id);
-  if (p) addToCart(p);
+  if (!p) return;
+  if (String(p.createdBy) !== String(state.user.id) && !getVisibleOwners(state.user.id).has(String(p.createdBy))) return;
+  addToCart(p);
   render();
 }
 
@@ -1825,7 +2108,11 @@ function scanBarcode(code) {
   const product = findProduct(code);
   
   if (product) {
-    addToCart(product);
+    if (String(product.createdBy) === String(state.user.id) || getVisibleOwners(state.user.id).has(String(product.createdBy))) {
+      addToCart(product);
+    } else {
+      alert('Producto no autorizado: ' + code);
+    }
   } else {
     alert('Producto no encontrado: ' + code);
   }
@@ -1843,11 +2130,15 @@ function scanProductBarcode(code) {
   const product = findProduct(code);
   
   if (product) {
-    if (product.stock > 0) {
-      addToCart(product);
-      alert('Agregado: ' + product.name + ' - ' + fmtMoney(product.price));
+    if (String(product.createdBy) === String(state.user.id) || getVisibleOwners(state.user.id).has(String(product.createdBy))) {
+      if (product.stock > 0) {
+        addToCart(product);
+        alert('Agregado: ' + product.name + ' - ' + fmtMoney(product.price));
+      } else {
+        alert('Sin stock: ' + product.name);
+      }
     } else {
-      alert('Sin stock: ' + product.name);
+      alert('Producto no autorizado: ' + product.name);
     }
   } else {
     state.modal = { type: 'quickAddProduct', barcode: code };
@@ -1859,9 +2150,106 @@ function scanProductBarcode(code) {
   }, 100);
 }
 
+function renderLicenses() {
+  if (String(state.user.id) !== '1') return '<div class="empty">Acceso denegado</div>';
+  const licenses = DB.get('licenses') || [];
+  const users = getUsers();
+  return `
+    <div class="header"><h1>Licencias</h1><button class="btn btn-primary" onclick="generateLicense()">+ Nueva Licencia</button></div>
+    <div class="card">
+      <table>
+        <thead><tr><th>Clave</th><th>Estado</th><th>Usada por</th><th>Fecha</th><th>Acciones</th></tr></thead>
+        <tbody>
+          ${licenses.map(l => {
+            const usedByUser = l.usedBy ? users.find(u => String(u.id) === String(l.usedBy)) : null;
+            const statusBadge = l.used 
+              ? '<span class="badge badge-danger">Usada</span>' 
+              : '<span class="badge badge-success">Disponible</span>';
+            return `
+              <tr>
+                <td><strong>${l.key}</strong></td>
+                <td>${statusBadge}</td>
+                <td>${usedByUser ? usedByUser.username : (l.used ? 'Desconocido' : '-')}</td>
+                <td>${l.usedAt ? fmtDate(l.usedAt) : '-'}</td>
+                <td>
+                  <button class="btn btn-danger btn-sm" data-license-key="${l.key.replace(/"/g, '&quot;')}" onclick="deleteLicenseFromBtn(this)" title="${l.used ? 'Eliminar licencia y todos los datos asociados' : 'Eliminar licencia'}">🗑️</button>
+                </td>
+              </tr>
+            `;
+          }).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function generateLicense() {
+  const prefix = 'PRO-' + new Date().getFullYear();
+  const randomPart = Math.random().toString(36).substring(2, 6).toUpperCase() + '-' + Math.random().toString(36).substring(2, 6).toUpperCase();
+  const key = prefix + '-' + randomPart;
+  const licenses = DB.get('licenses') || [];
+  licenses.push({ key, used: false });
+  DB.set('licenses', licenses);
+  alert('Licencia generada: ' + key);
+  render();
+}
+
+function deleteLicense(key) {
+  console.log('deleteLicense called with key:', key);
+  if (!confirm('¿Eliminar licencia ' + key + '?\n\nEsto eliminará también el usuario, productos, ventas y créditos asociados a esta licencia.')) return;
+  const licenses = DB.get('licenses');
+  console.log('licenses:', licenses);
+  const license = licenses.find(l => l.key === key);
+  console.log('license found:', license);
+  if (!license) return;
+  
+  if (license.used && license.usedBy) {
+    const targetUserId = String(license.usedBy);
+    const users = DB.get('users');
+    const targetUser = users.find(u => String(u.id) === targetUserId);
+    console.log('targetUser:', targetUser);
+    
+    if (targetUser) {
+      const usersToDelete = new Set([targetUserId]);
+      const findSubUsers = (userId) => {
+        users.forEach(u => {
+          if (String(u.createdBy) === String(userId) && !usersToDelete.has(String(u.id))) {
+            usersToDelete.add(String(u.id));
+            findSubUsers(String(u.id));
+          }
+        });
+      };
+      findSubUsers(targetUserId);
+      
+      const products = DB.get('products').filter(p => !usersToDelete.has(String(p.createdBy)));
+      let sales = DB.get('sales').filter(s => !usersToDelete.has(String(s.userId || s.user)));
+      let fiados = DB.get('fiados').filter(f => !usersToDelete.has(String(f.userId || f.user)));
+      
+      const remainingUsers = users.filter(u => !usersToDelete.has(String(u.id)));
+      
+      DB.set('users', remainingUsers);
+      DB.set('products', products);
+      DB.set('sales', sales);
+      DB.set('fiados', fiados);
+      console.log('deleted users:', usersToDelete);
+    }
+  }
+  
+  const updatedLicenses = licenses.filter(l => l.key !== key);
+  DB.set('licenses', updatedLicenses);
+  render();
+}
+
+function deleteLicenseFromBtn(btn) {
+  const key = btn.getAttribute('data-license-key');
+  if (key) {
+    deleteLicense(key);
+  }
+}
+
 function renderUsers() {
   if (state.user.role !== 'ADMIN') return '<div class="empty">Acceso denegado</div>';
-  const users = getUsers();
+  const users = getVisibleUsers();
   return `
     <div class="header"><h1>Usuarios</h1><button class="btn btn-primary" onclick="state.modal={type:'user'};render()">+ Nuevo</button></div>
     
@@ -1950,13 +2338,14 @@ function renderUsers() {
     <!-- GESTION DE USUARIOS -->
     <div class="card">
       <table>
-        <thead><tr><th>Usuario</th><th>Rol</th><th>Fecha</th><th>Acciones</th></tr></thead>
+        <thead><tr><th>Usuario</th><th>Rol</th><th>Fecha</th><th>Creado por</th><th>Acciones</th></tr></thead>
         <tbody>
           ${users.map(u=>`
             <tr>
               <td><strong>${u.username}</strong></td>
               <td><span class="badge ${u.role==='ADMIN'?'badge-warning':'badge-info'}">${u.role==='ADMIN'?'Administrador':'Usuario'}</span></td>
               <td>${fmtDate(u.created)}</td>
+              <td>${getUserCreator(u.id)}</td>
               <td>
                 <div class="flex gap-2">
                   <button class="btn btn-secondary btn-sm" onclick="state.modal={type:'user',user:${JSON.stringify(u).replace(/"/g,'&quot;')}};render()">✏️</button>
@@ -2302,6 +2691,11 @@ window.state = state;
 window.logout = logout;
 window.loginWithGoogle = loginWithGoogle;
 window.registerUser = registerUser;
+window.validateRegisterLicense = validateRegisterLicense;
+window.activateLicense = activateLicense;
+window.generateLicense = generateLicense;
+window.deleteLicense = deleteLicense;
+window.deleteLicenseFromBtn = deleteLicenseFromBtn;
 window.showPaymentOptions = showPaymentOptions;
 window.submitSale = submitSale;
 window.submitQuote = submitQuote;
@@ -2366,10 +2760,24 @@ window.addEventListener('beforeunload', (e) => {
 
   window.App.Services.FirebaseAuth.onAuthChange(async (user) => {
     if (user) {
-      state.user = { id: user.uid, username: (user.email || '').split('@')[0], email: user.email, role: 'USER' };
-      state.page = 'sales';
+      const email = user.email || '';
+      state.user = { id: user.uid, username: email.split('@')[0], email: email, role: 'ADMIN', licensed: false };
+      state.page = 'activate-license';
+      state.registerLicenseOk = false;
+      state.registerLicenseKey = '';
       try {
         await window.App.Services.DB.init();
+        const users = await window.App.Services.DB.get('users');
+        const profile = users.find(u => u.email === email);
+        if (profile) {
+          state.user = profile;
+          const licensed = profile.licensed !== false;
+          if (licensed) {
+            state.page = 'sales';
+          } else {
+            state.page = 'activate-license';
+          }
+        }
       } catch (e) {
         console.error('Error inicializando Firestore', e);
       }
