@@ -36,6 +36,7 @@ let state = {
 async function login(username, password) {
   try {
     state.loginError = '';
+    await window.App.Services.DB.init();
     
     if (username === 'Sistemapro' && password === 'Sistemapro1532') {
       state.user = {
@@ -67,11 +68,11 @@ async function login(username, password) {
       }
     }
     
-    state.loginError = 'Usuario no encontrado';
+    state.loginError = 'Usuario no encontrado. Verifica tu conexión a internet y desactiva bloqueadores de anuncios.';
     render();
     return false;
   } catch (e) {
-    state.loginError = 'Error de conexión. Intenta nuevamente.';
+    state.loginError = 'Error de conexión. Verifica tu internet y desactiva AdBlock/uBlock.';
     render();
     return false;
   }
