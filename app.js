@@ -82,16 +82,7 @@ async function validateRegisterLicense(key) {
   key = (key || '').trim();
   if (!key) { state.loginError = 'Ingrese la clave de licencia'; render(); return; }
   try {
-    let licenses = await window.App.Services.DB.get('licenses');
-    if (!licenses || licenses.length === 0) {
-      const defaults = [
-        { key: 'PRO-2024-DEMO-0001', used: false },
-        { key: 'PRO-2024-DEMO-0002', used: false },
-        { key: 'PRO-2024-DEMO-0003', used: false }
-      ];
-      await window.App.Services.DB.set('licenses', defaults);
-      licenses = defaults;
-    }
+    const licenses = await window.App.Services.DB.get('licenses');
     const license = licenses.find(l => l.key === key);
     if (!license) {
       state.loginError = 'Clave de licencia inválida';
@@ -218,16 +209,7 @@ async function activateLicense(key) {
   key = (key || '').trim();
   if (!key) { state.loginError = 'Ingrese la clave de licencia'; render(); return false; }
   try {
-    let licenses = await window.App.Services.DB.get('licenses');
-    if (!licenses || licenses.length === 0) {
-      const defaults = [
-        { key: 'PRO-2024-DEMO-0001', used: false },
-        { key: 'PRO-2024-DEMO-0002', used: false },
-        { key: 'PRO-2024-DEMO-0003', used: false }
-      ];
-      await window.App.Services.DB.set('licenses', defaults);
-      licenses = defaults;
-    }
+    const licenses = await window.App.Services.DB.get('licenses');
     const license = licenses.find(l => l.key === key);
     if (!license) {
       state.loginError = 'Clave de licencia inválida';

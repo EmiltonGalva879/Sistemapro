@@ -14,44 +14,13 @@ const DB = {
         products: [],
         sales: [],
         fiados: [],
-        licenses: [
-          { key: 'PRO-2024-DEMO-0001', used: false },
-          { key: 'PRO-2024-DEMO-0002', used: false },
-          { key: 'PRO-2024-DEMO-0003', used: false }
-        ]
+        licenses: []
       });
     }
     await this._loadAll();
     await this._migrateIfNeeded();
-    await this._ensureDefaultLicenses();
     this._subscribeAll();
     this._ready = true;
-  },
-
-  async _ensureDefaultLicenses() {
-    try {
-      const licenses = this._cache['licenses'];
-      if (!licenses || licenses.length === 0) {
-        const defaults = [
-          { key: 'PRO-2024-DEMO-0001', used: false },
-          { key: 'PRO-2024-DEMO-0002', used: false },
-          { key: 'PRO-2024-DEMO-0003', used: false }
-        ];
-        this._cache['licenses'] = defaults;
-        const docRef = window.FB_DB.collection('data').doc('licenses');
-        const doc = await docRef.get();
-        if (!doc.exists) {
-          await docRef.set({ items: defaults });
-        } else {
-          const data = doc.data();
-          if ((!data || !data.items || data.items.length === 0) && defaults.length > 0) {
-            await docRef.set({ items: defaults });
-          }
-        }
-      }
-    } catch (e) {
-      console.error('Error ensuring default licenses', e);
-    }
   },
 
   async _migrateIfNeeded() {
