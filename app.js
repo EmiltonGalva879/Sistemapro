@@ -1362,9 +1362,112 @@ function createFiadoFromCart(customerName, customerPhone, notes) {
   saveFiado(fiado);
   state.cart = [];
   state.modal = null;
-  state.page = 'fiados'; // Navigate to fiados page
+  state.page = 'fiados';
   render();
   alert('Credito creado: ' + customerName + ' - Total: ' + fmtMoneyInvoice(total));
+  printFiadoReceipt(fiado);
+}
+
+function printFiadoReceipt(fiado) {
+  if (!fiado) return;
+  const doc = new jsPDF({ unit: 'mm', format: [80, 120] });
+  const x = 8;
+  let y = 10;
+  const maxW = 64;
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(14);
+  doc.text((localStorage.getItem('salesstock_bizname') || 'SalesStock Pro').toUpperCase(), 40, y, { align: 'center' });
+  y += 6;
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(9);
+  doc.text('RECIBO DE CREDITO', 40, y, { align: 'center' });
+  y += 5;
+  pdfLine(doc, x, maxW, y);
+  y += 4;
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(10);
+  doc.text('Cliente:', x, y);
+  doc.setFont('helvetica', 'normal');
+  doc.text((fiado.customerName || 'Cliente'), x + 18, y);
+  y += 5;
+
+  if (fiado.customerPhone) {
+    doc.setFont('helvetica', 'bold');
+    doc.text('Telefono:', x, y);
+    doc.setFont('helvetica', 'normal');
+    doc.text(fiado.customerPhone, x + 18, y);
+    y += 5;
+  }
+
+  doc.setFont('helvetica', 'bold');
+  doc.text('Fecha:', x, y);
+  doc.setFont('helvetica', 'normal');
+  doc.text(new Date(fiado.created).toLocaleString('es-ES'), x + 15, y);
+  y += 5;
+  pdfLine(doc, x, maxW, y);
+  y += 4;
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(10);
+  doc.text('DETALLE', x, y);
+  y += 5;
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(9);
+  (fiado.items || []).forEach(item => {
+    const name = item.name || '';
+    const qty = item.quantity || 1;
+    const line = name + ' x' + qty;
+    const lines = doc.splitTextToSize(line, maxW);
+    doc.text(lines, x, y);
+    y += lines.length * 4;
+  });
+  y += 2;
+  pdfLine(doc, x, maxW, y);
+  y += 4;
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(11);
+  doc.text('Total:', x, y);
+  doc.text(fmtMoneyInvoice(fiado.total), x + 18, y);
+  y += 5;
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(10);
+  doc.text('Pagado:', x, y);
+  doc.text(fmtMoneyInvoice(fiado.paid || 0), x + 18, y);
+  y += 5;
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(12);
+  doc.text('Saldo Pendiente:', x, y);
+  doc.text(fmtMoneyInvoice(fiado.balance || fiado.total), x + 35, y);
+  y += 8;
+  pdfLine(doc, x, maxW, y);
+  y += 4;
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(10);
+  doc.text('IMPORTE A PAGAR', 40, y, { align: 'center' });
+  y += 6;
+  doc.setFontSize(16);
+  doc.text(fmtMoneyInvoice(fiado.balance || fiado.total), 40, y, { align: 'center' });
+  y += 6;
+  pdfLine(doc, x, maxW, y);
+  y += 4;
+
+  doc.setFont('helvetica', 'normal');
+  doc.setFontSize(9);
+  doc.text('Gracias por su compra', 40, y, { align: 'center' });
+
+  doc.save('credito-' + (fiado.id || Date.now()) + '.pdf');
+  const win = window.open('', '_blank', 'width=400,height=600');
+  if (win) {
+    const blob = doc.output('blob');
+    const url = URL.createObjectURL(blob);
+    win.location.href = url;
+    setTimeout(() => { try { win.focus(); win.print(); } catch (e) {} setTimeout(() => URL.revokeObjectURL(url), 1000); }, 400);
+  }
 }
 
 function renderFiados() {
@@ -2489,12 +2592,8 @@ function renderModal() {
             <div style="display:flex;flex-direction:column;gap:15px">
               ${m.paymentMode === 'sale' ? `
                  <button class="btn btn-success" style="padding:20px;font-size:18px" onclick="submitSale('contado')">
-                   💵 Pagar de una vez
+                   💵 Cobrar
                    <div style="font-size:14px;font-weight:normal;margin-top:5px">Total: ${fmtMoneyInvoice(m.subtotal + m.itbis)}</div>
-                 </button>
-                 <button class="btn btn-primary" style="padding:20px;font-size:18px" onclick="submitSale('credito')">
-                   📊 Pagar a Crédito
-                   <div style="font-size:14px;font-weight:normal;margin-top:5px">Total: ${fmtMoneyInvoice(m.subtotal + m.itbis + m.subtotal * 0.05)} (5% interés incluido)</div>
                  </button>
               ` : ''}
               ${m.paymentMode === 'quote' ? `
@@ -2504,7 +2603,6 @@ function renderModal() {
                 </button>
               ` : ''}
             </div>
-            ${m.paymentMode === 'sale' ? '<p style="margin-top:20px;color:#64748b;font-size:12px">* Crédito: se cobrará 5% extra después de 30 días</p>' : ''}
           </div>
         </div>
       </div>
