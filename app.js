@@ -451,6 +451,31 @@ function showPaymentOptions(mode) {
   render();
 }
 
+function updateChange() {
+  const paidInput = document.getElementById('paid-amount');
+  const changeDisplay = document.getElementById('change-display');
+  if (!paidInput || !changeDisplay) return;
+  const total = state.modal && state.modal.total ? state.modal.total : 0;
+  const paid = parseFloat(paidInput.value) || 0;
+  const change = paid - total;
+  if (paid > 0) {
+    changeDisplay.style.display = 'block';
+    if (change >= 0) {
+      changeDisplay.style.background = '#f0fdf4';
+      changeDisplay.style.borderColor = '#bbf7d0';
+      changeDisplay.style.color = '#166534';
+      changeDisplay.textContent = 'Cambio: ' + fmtMoneyInvoice(change);
+    } else {
+      changeDisplay.style.background = '#fef2f2';
+      changeDisplay.style.borderColor = '#fecaca';
+      changeDisplay.style.color = '#991b1b';
+      changeDisplay.textContent = 'Faltan: ' + fmtMoneyInvoice(Math.abs(change));
+    }
+  } else {
+    changeDisplay.style.display = 'none';
+  }
+}
+
 function promptHiddenDiscount(id) {
   const item = state.cart.find(i => i.id === id);
   if (!item) return;
@@ -475,9 +500,10 @@ function submitSale(paymentType) {
   const customerName = document.getElementById('customer-name')?.value || '';
   const customerPhone = document.getElementById('customer-phone')?.value || '';
   const notes = document.getElementById('sale-notes')?.value || '';
+  const paidAmount = parseFloat(document.getElementById('paid-amount')?.value) || 0;
   state.modal = null;
   printWindow = window.open('', '_blank', 'width=800,height=600');
-  completeSale(paymentType, { customerName, customerPhone, notes });
+  completeSale(paymentType, { customerName, customerPhone, notes, paidAmount });
 }
 
 function submitQuote() {
@@ -516,6 +542,8 @@ function completeSale(paymentType, customerData) {
     customerName: customerData.customerName || '',
     customerPhone: customerData.customerPhone || '',
     notes: customerData.notes || '',
+    paidAmount: customerData.paidAmount || 0,
+    change: (customerData.paidAmount || 0) - finalTotal,
     created: new Date().toISOString()
   };
   const products = DB.get('products');
@@ -1010,6 +1038,19 @@ function buildInvoiceDocument(sale) {
   doc.setFontSize(12);
   doc.text('TOTAL: ' + fmtMoneyInvoice(sale.total), colTotal, y, { align: 'right' });
   y += 5;
+
+  if (sale.paidAmount > 0 || sale.change !== undefined) {
+    doc.setFont(FONT, 'normal');
+    doc.setFontSize(9);
+    doc.text('Pagado:', colTotal, y, { align: 'right' });
+    doc.text(fmtMoneyInvoice(sale.paidAmount || 0), colTotal, y, { align: 'right' });
+    y += 4;
+    doc.setFont(FONT, 'bold');
+    doc.setFontSize(10);
+    doc.text('Cambio:', colTotal, y, { align: 'right' });
+    doc.text(fmtMoneyInvoice(Math.max(0, sale.change || 0)), colTotal, y, { align: 'right' });
+    y += 4;
+  }
 
   doc.setFont(FONT, 'normal');
   doc.setFontSize(8);
@@ -2586,6 +2627,15 @@ function renderModal() {
                  </div>
               </div>
             </div>
+            ${m.paymentMode === 'sale' ? `
+              <div class="form-group" style="margin-bottom:20px">
+                <label>Monto pagado por el cliente</label>
+                <input type="number" id="paid-amount" class="form-control" placeholder="0.00" step="0.01" oninput="updateChange()">
+              </div>
+              <div id="change-display" style="background:#f0fdf4;border:1px solid #bbf7d0;color:#166534;padding:12px;border-radius:8px;margin-bottom:20px;display:none;text-align:center;font-weight:700;font-size:16px">
+                Cambio: RD$ 0.00
+              </div>
+            ` : ''}
             <p style="margin-bottom:20px;color:#64748b;font-size:12px">
               ${m.paymentMode === 'sale' ? 'Seleccione la forma de pago:' : 'Generar cotización sin pago:'}
             </p>
@@ -2839,6 +2889,7 @@ window.generateLicense = generateLicense;
 window.deleteLicense = deleteLicense;
 window.deleteLicenseFromBtn = deleteLicenseFromBtn;
 window.showPaymentOptions = showPaymentOptions;
+window.updateChange = updateChange;
 window.submitSale = submitSale;
 window.submitQuote = submitQuote;
 window.previewSaleInvoice = previewSaleInvoice;
