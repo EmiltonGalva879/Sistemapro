@@ -700,8 +700,8 @@ function getStats() {
   };
 }
 
-const fmtMoney = (v) => '$' + v.toFixed(2);
-const fmtMoneyInvoice = (v) => '$' + Math.round(v);
+const fmtMoney = (v) => 'RD$' + v.toFixed(2);
+const fmtMoneyInvoice = (v) => 'RD$ ' + Number(v).toFixed(2);
 const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 const roundPeso = (n) => Math.round(Number(n) || 0);
 const fmtDate = (d) => new Date(d).toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
@@ -968,7 +968,7 @@ function buildInvoiceDocument(sale) {
   doc.setFontSize(9);
   const colQty = MARGIN_X;
   const colDescStart = MARGIN_X + 10;
-  const colUnit = MARGIN_X + INNER_W - 18;
+  const colUnit = MARGIN_X + INNER_W - 26;
   const colTotal = MARGIN_X + INNER_W;
   doc.text('CANT', colQty, y, { align: 'left' });
   doc.text('DESCRIPCIÓN', colDescStart, y, { align: 'left' });
@@ -979,17 +979,17 @@ function buildInvoiceDocument(sale) {
   y += 3;
 
   doc.setFont(FONT, 'normal');
-  doc.setFontSize(8);
+  doc.setFontSize(7);
   sale.items.forEach(item => {
-    const name = abbreviateText(doc, item.name, INNER_W - 22);
-    const lineH = 7;
-    const pu = '$' + Math.round(item.price);
-    const tot = '$' + Math.round(item.subtotal);
-    doc.text(String(item.quantity), colQty, y + 1.2, { align: 'left' });
-    doc.text(name, colDescStart, y + 1.2, { align: 'left' });
-    doc.text(pu, colUnit, y + 1.2, { align: 'right' });
-    doc.text(tot, colTotal, y + 1.2, { align: 'right' });
-    y += lineH + 2;
+    const name = abbreviateText(doc, item.name, INNER_W - 30);
+    const lineH = 6;
+    const pu = fmtMoney(item.price);
+    const tot = fmtMoney(item.subtotal);
+    doc.text(String(item.quantity), colQty, y + 1, { align: 'left' });
+    doc.text(name, colDescStart, y + 1, { align: 'left' });
+    doc.text(pu, colUnit, y + 1, { align: 'right' });
+    doc.text(tot, colTotal, y + 1, { align: 'right' });
+    y += lineH + 1.5;
   });
 
   y += 1;
@@ -1022,6 +1022,35 @@ function buildInvoiceDocument(sale) {
   }
   y += 4;
   pdfLine(doc, MARGIN_X, INNER_W, y);
+  y += 6;
+
+  const ticketBarcodeY = y;
+  const ticketCanvas = document.createElement('canvas');
+  ticketCanvas.width = 300;
+  ticketCanvas.height = 80;
+  try {
+    JsBarcode(ticketCanvas, String(sale.id), {
+      format: 'CODE128',
+      lineColor: '#000000',
+      width: 1.5,
+      height: 32,
+      displayValue: true,
+      fontSize: 10,
+      margin: 4
+    });
+    const ticketImgData = ticketCanvas.toDataURL('image/png');
+    doc.addImage(ticketImgData, 'PNG', MARGIN_X + 8, ticketBarcodeY, INNER_W - 16, 11);
+    y = ticketBarcodeY + 13;
+  } catch (e) {
+    doc.setFontSize(9);
+    doc.text('Factura: ' + sale.id, PAGE_W / 2, ticketBarcodeY + 4, { align: 'center' });
+    y = ticketBarcodeY + 8;
+  }
+
+  y += 4;
+  doc.setDrawColor(...LINE_COLOR);
+  doc.setLineWidth(0.4);
+  doc.line(MARGIN_X, y, MARGIN_X + INNER_W, y);
 
   return doc;
 }
@@ -2609,14 +2638,19 @@ function generateLabelPDF(products) {
   if (!products.length) { alert('No hay productos para imprimir'); return; }
 
   const doc = new jsPDF({ unit: 'mm', format: 'a4' });
-  const labelW = 60;
-  const labelH = 25;
-  const marginX = 12;
-  const marginY = 12;
-  const gapX = 6;
-  const gapY = 4;
-  const cols = 3;
+  const labelW = 100;
+  const labelH = 70;
+  const marginX = 10;
+  const marginY = 15;
+  const gapX = 4;
+  const gapY = 6;
+  const cols = 1;
   const rowsPerPage = Math.floor((297 - marginY * 2 + gapY) / (labelH + gapY));
+
+  const primaryColor = [37, 99, 235];
+  const secondaryColor = [30, 41, 59];
+  const textColor = [30, 41, 59];
+  const white = [255, 255, 255];
 
   let col = 0, row = 0;
   products.forEach((p) => {
@@ -2629,35 +2663,62 @@ function generateLabelPDF(products) {
     const x = marginX + col * (labelW + gapX);
     const y = marginY + row * (labelH + gapY);
 
-    doc.setDrawColor(180);
-    doc.rect(x, y, labelW, labelH);
+    doc.setDrawColor(226, 232, 240);
+    doc.setFillColor(255, 255, 255);
+    doc.roundedRect(x, y, labelW, labelH, 4, 4, 'FD');
+
+    doc.setFillColor(...primaryColor);
+    doc.roundedRect(x + 2, y + 2, labelW - 4, 14, 3, 3, 'F');
+    doc.setTextColor(...white);
+    doc.setFontSize(12);
+    doc.setFont('helvetica', 'bold');
+    const bizName = (localStorage.getItem('salesstock_bizname') || 'SalesStock Pro').trim();
+    doc.text(bizName.toUpperCase(), x + labelW / 2, y + 10, { align: 'center' });
+
+    doc.setTextColor(...textColor);
+    doc.setFontSize(14);
+    doc.setFont('helvetica', 'bold');
+    const productName = (p.name || '').toUpperCase();
+    const lines = doc.splitTextToSize(productName, labelW - 10);
+    doc.text(lines, x + labelW / 2, y + 22, { align: 'center' });
+
+    doc.setFontSize(10);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(100, 116, 139);
+    doc.text('Código: ' + (p.barcode || ('S' + p.id)), x + labelW / 2, y + 30, { align: 'center' });
 
     const canvas = document.createElement('canvas');
-    canvas.width = 300;
-    canvas.height = 80;
+    canvas.width = 400;
+    canvas.height = 120;
     try {
       JsBarcode(canvas, p.barcode || ('S' + p.id), {
         format: 'CODE128',
+        lineColor: '#000000',
         width: 2,
-        height: 40,
-        displayValue: true,
-        fontSize: 12,
-        margin: 0
+        height: 60,
+        displayValue: false
       });
       const imgData = canvas.toDataURL('image/png');
-      doc.addImage(imgData, 'PNG', x + 2, y + 2, labelW - 4, 12);
+      doc.addImage(imgData, 'PNG', x + 10, y + 32, labelW - 20, 22);
     } catch (e) {
-      doc.setFontSize(8);
-      doc.text(p.barcode || 'N/A', x + 4, y + 6);
+      doc.setFontSize(11);
+      doc.setTextColor(...textColor);
+      doc.text(p.barcode || 'N/A', x + labelW / 2, y + 46, { align: 'center' });
     }
 
-    const name = p.name.length > 22 ? p.name.substring(0, 20) + '..' : p.name;
-    const nameW = doc.getTextWidth(name);
-    doc.text(name, x + (labelW - nameW) / 2, y + 17);
+    doc.setFontSize(12);
+    doc.setFont('courier', 'bold');
+    doc.setTextColor(...textColor);
+    doc.text((p.barcode || ('S' + p.id)), x + labelW / 2, y + 58, { align: 'center' });
 
-    const price = '$' + p.price.toFixed(2);
-    const priceW = doc.getTextWidth(price);
-    doc.text(price, x + (labelW - priceW) / 2, y + 23);
+    doc.setFillColor(...primaryColor);
+    doc.roundedRect(x + 2, y + labelH - 16, labelW - 4, 14, 3, 3, 'F');
+    doc.setTextColor(...white);
+    doc.setFontSize(11);
+    doc.setFont('helvetica', 'bold');
+    doc.text('PRECIO', x + labelW / 2, y + labelH - 10, { align: 'center' });
+    doc.setFontSize(18);
+    doc.text('RD$ ' + Number(p.price).toFixed(2), x + labelW / 2, y + labelH - 3, { align: 'center' });
 
     col++;
     if (col >= cols) {
