@@ -57,6 +57,10 @@ async function login(username, password) {
     
     if (localUser) {
       if (localUser.password === password) {
+        if (!localUser.companyId) {
+          localUser.companyId = String(localUser.id);
+          await window.App.Services.DB.set('users', users);
+        }
         state.user = localUser;
         state.page = 'sales';
         render();
@@ -132,8 +136,9 @@ async function registerUser(username, password, confirmPassword) {
       render();
       return false;
     }
+    const newId = 'U-' + Date.now();
     const profile = {
-      id: 'U-' + Date.now(),
+      id: newId,
       username: username,
       email: username + '@sistema.local',
       password: password,
@@ -141,13 +146,15 @@ async function registerUser(username, password, confirmPassword) {
       created: new Date().toISOString(),
       licenseKey: licenseKey,
       licensed: true,
-      createdBy: '1'
+      createdBy: '1',
+      companyId: newId
     };
     users.push(profile);
     await window.App.Services.DB.set('users', users);
     license.used = true;
     license.usedBy = String(profile.id);
     license.usedAt = new Date().toISOString();
+    license.companyId = newId;
     await window.App.Services.DB.set('licenses', licenses);
     state.user = profile;
     state.page = 'sales';
@@ -225,6 +232,7 @@ async function activateLicense(key) {
       license.used = true;
       license.usedBy = String(state.user.id);
       license.usedAt = new Date().toISOString();
+      if (!license.companyId) license.companyId = String(state.user.id);
       await window.App.Services.DB.set('licenses', licenses);
     }
     const users = await window.App.Services.DB.get('users');
@@ -237,12 +245,14 @@ async function activateLicense(key) {
         role: state.user.role || 'ADMIN',
         created: new Date().toISOString(),
         licenseKey: key,
-        licensed: true
+        licensed: true,
+        companyId: String(state.user.id)
       });
       idx = users.length - 1;
     } else {
       users[idx].licenseKey = key;
       users[idx].licensed = true;
+      if (!users[idx].companyId) users[idx].companyId = String(state.user.id);
     }
     await window.App.Services.DB.set('users', users);
     state.user = users[idx];
@@ -258,6 +268,12 @@ async function activateLicense(key) {
     render();
     return false;
   }
+}
+
+function getCompanyId() {
+  if (!state.user) return null;
+  if (String(state.user.id) === '1') return null;
+  return String(state.user.companyId || state.user.id);
 }
 
 function getVisibleOwners(userId) {
@@ -295,12 +311,12 @@ function getUserCreator(userId) {
 function getProducts() {
   const products = DB.get('products');
   if (!state.user) return products;
-  const visibleOwners = getVisibleOwners(state.user.id);
-  let filtered = products.filter(p => visibleOwners.has(String(p.createdBy)));
+  const companyId = getCompanyId();
+  if (!companyId) return products;
   if (state.search) {
-    filtered = filtered.filter(p => p.name.toLowerCase().includes(state.search.toLowerCase()) || p.barcode.includes(state.search));
+    return products.filter(p => String(p.companyId) === companyId && (p.name.toLowerCase().includes(state.search.toLowerCase()) || p.barcode.includes(state.search)));
   }
-  return filtered;
+  return products.filter(p => String(p.companyId) === companyId);
 }
 
 function getLowStock() {
@@ -316,6 +332,7 @@ function saveProduct(product) {
     product.id = Date.now();
     product.barcode = product.barcode || 'S' + Date.now().toString().slice(-10);
     product.createdBy = String(state.user.id);
+    product.companyId = String(state.user.companyId || state.user.id);
     products.push(product);
   }
   DB.set('products', products);
@@ -331,6 +348,7 @@ function saveQuickProduct(name, price, stock, minStock, barcode) {
     minStock: parseInt(minStock) || 5,
     barcode: barcode,
     createdBy: String(state.user.id),
+    companyId: String(state.user.companyId || state.user.id),
     created: new Date().toISOString()
   };
   products.push(newProduct);
@@ -345,7 +363,12 @@ function deleteProduct(id) {
   DB.set('products', products);
 }
 
-function getSales() { return DB.get('sales'); }
+function getSales() { 
+  const sales = DB.get('sales');
+  const companyId = getCompanyId();
+  if (!companyId) return sales;
+  return sales.filter(s => String(s.companyId) === companyId);
+}
 function getVisibleSales() {
   const sales = getSales();
   if (!state.user) return sales;
@@ -388,7 +411,7 @@ function deleteSale(id) {
     }
   });
   DB.set('products', products);
-  DB.set('sales', getSales().filter(s => s.id !== id));
+  DB.set('sales', DB.get('sales').filter(s => s.id !== id));
   alert('Venta eliminada');
   render();
 }
@@ -544,6 +567,7 @@ function completeSale(paymentType, customerData) {
     notes: customerData.notes || '',
     paidAmount: customerData.paidAmount || 0,
     change: (customerData.paidAmount || 0) - finalTotal,
+    companyId: String(state.user.companyId || state.user.id),
     created: new Date().toISOString()
   };
   const products = DB.get('products');
@@ -555,7 +579,7 @@ function completeSale(paymentType, customerData) {
     }
   });
   DB.set('products', products);
-  DB.set('sales', [...getSales(), sale]);
+  DB.set('sales', [...DB.get('sales'), sale]);
   generateInvoice(sale);
   
   // Open cash drawer if enabled (only for contado)
@@ -639,7 +663,12 @@ function openCashDrawer() {
   }
 }
 
-function getUsers() { return DB.get('users'); }
+function getUsers() {
+  const users = DB.get('users');
+  const companyId = getCompanyId();
+  if (!companyId) return users;
+  return users.filter(u => String(u.companyId) === companyId);
+}
 function saveUser(user) {
   const users = DB.get('users');
   if (user.id) {
@@ -648,13 +677,14 @@ function saveUser(user) {
   } else {
     user.id = Date.now();
     user.createdBy = String(state.user.id);
+    user.companyId = String(state.user.companyId || state.user.id);
     user.licensed = true;
     users.push(user);
   }
   DB.set('users', users);
 }
 function deleteUser(id) {
-  DB.set('users', getUsers().filter(u => u.id !== id));
+  DB.set('users', DB.get('users').filter(u => u.id !== id));
 }
 
 function testScanner() {
@@ -721,7 +751,7 @@ function getStats() {
   return {
     totalProducts: getProducts().length,
     todaySales: todaySales.reduce((sum, s) => sum + s.total, 0),
-    totalUsers: DB.get('users').length,
+    totalUsers: getUsers().length,
     pendingFiados: pendingFiados.reduce((sum, f) => sum + (f.balance || f.total), 0),
     totalFiados: fiados.length,
     paidFiados: paidFiados.length
@@ -1308,7 +1338,12 @@ function renderActivateLicense() {
   `;
 }
 
-function getFiados() { return DB.get('fiados'); }
+function getFiados() { 
+  const fiados = DB.get('fiados');
+  const companyId = getCompanyId();
+  if (!companyId) return fiados;
+  return fiados.filter(f => String(f.companyId) === companyId);
+}
 function getVisibleFiados() {
   const fiados = getFiados();
   if (!state.user) return fiados;
@@ -1328,6 +1363,7 @@ function saveFiado(fiado) {
   } else {
     fiado.id = Date.now();
     fiado.created = new Date().toISOString();
+    if (!fiado.companyId) fiado.companyId = String(state.user.companyId || state.user.id);
     fiados.push(fiado);
   }
   DB.set('fiados', fiados);
@@ -1397,7 +1433,8 @@ function createFiadoFromCart(customerName, customerPhone, notes) {
     payments: [],
     status: 'pending',
     user: state.user.username,
-    userId: String(state.user.id)
+    userId: String(state.user.id),
+    companyId: String(state.user.companyId || state.user.id)
   };
   
   saveFiado(fiado);
@@ -1606,7 +1643,7 @@ function deleteFiado(id) {
     }
   });
   DB.set('products', products);
-  DB.set('fiados', getFiados().filter(f => f.id !== id));
+  DB.set('fiados', DB.get('fiados').filter(f => f.id !== id));
   alert('Credito eliminado');
   render();
 }
@@ -2144,7 +2181,7 @@ function renderSales() {
 }
 
 function addProdById(id) {
-  const products = DB.get('products');
+  const products = getProducts();
   const p = products.find(x => x.id === id);
   if (!p) return;
   if (String(p.createdBy) !== String(state.user.id) && !getVisibleOwners(state.user.id).has(String(p.createdBy))) return;
@@ -2239,6 +2276,26 @@ function escapeHtml(text) {
 
 function findProduct(query) {
   const products = DB.get('products');
+  const companyId = getCompanyId();
+  if (companyId) {
+    const filtered = products.filter(p => String(p.companyId) === companyId);
+    query = query.toLowerCase().trim();
+    if (!q) return null;
+    
+    // 1. Búsqueda EXACTA por código de barras
+    let product = filtered.find(p => p.barcode === query);
+    if (product) return product;
+    
+    // 2. Búsqueda PARCIAL por código de barras
+    product = filtered.find(p => p.barcode && p.barcode.toLowerCase().includes(q));
+    if (product) return product;
+    
+    // 3. Búsqueda por nombre (parcial, sin distinción de mayúsculas)
+    product = filtered.find(p => p.name.toLowerCase().includes(q));
+    if (product) return product;
+    
+    return null;
+  }
   const q = query.toLowerCase().trim();
   if (!q) return null;
   
@@ -2363,7 +2420,7 @@ function deleteLicense(key) {
     const targetUserId = String(license.usedBy);
     const users = DB.get('users');
     const targetUser = users.find(u => String(u.id) === targetUserId);
-    console.log('targetUser:', targetUser);
+    const companyId = license.companyId || targetUserId;
     
     if (targetUser) {
       const usersToDelete = new Set([targetUserId]);
@@ -2377,9 +2434,9 @@ function deleteLicense(key) {
       };
       findSubUsers(targetUserId);
       
-      const products = DB.get('products').filter(p => !usersToDelete.has(String(p.createdBy)));
-      let sales = DB.get('sales').filter(s => !usersToDelete.has(String(s.userId || s.user)));
-      let fiados = DB.get('fiados').filter(f => !usersToDelete.has(String(f.userId || f.user)));
+      const products = DB.get('products').filter(p => !(usersToDelete.has(String(p.createdBy)) && String(p.companyId) === companyId));
+      let sales = DB.get('sales').filter(s => !(usersToDelete.has(String(s.userId || s.user)) && String(s.companyId) === companyId));
+      let fiados = DB.get('fiados').filter(f => !(usersToDelete.has(String(f.userId || f.user)) && String(f.companyId) === companyId));
       
       const remainingUsers = users.filter(u => !usersToDelete.has(String(u.id)));
       
@@ -2771,7 +2828,7 @@ function exportPDF() {
 }
 
 function printBarcodeLabels() {
-  const products = DB.get('products');
+  const products = getProducts();
   generateLabelPDF(products);
 }
 
@@ -2963,6 +3020,10 @@ window.addEventListener('beforeunload', (e) => {
         const users = await window.App.Services.DB.get('users');
         const profile = users.find(u => u.email === email);
         if (profile) {
+          if (!profile.companyId) {
+            profile.companyId = String(profile.id);
+            await window.App.Services.DB.set('users', users);
+          }
           state.user = profile;
           const licensed = profile.licensed !== false;
           if (licensed) {
