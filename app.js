@@ -279,13 +279,16 @@ function getCompanyId() {
 function getVisibleOwners(userId) {
   const owners = new Set([String(userId)]);
   const users = getUsers();
+  const currentUser = users.find(u => String(u.id) === String(userId));
+  const companyId = currentUser ? String(currentUser.companyId || currentUser.id) : null;
   let current = String(userId);
   let iterations = 0;
   while (iterations < 100) {
     if (current === '1') break;
     const creator = users.find(u => String(u.id) === current && u.createdBy);
     if (!creator) break;
-    if (String(creator.createdBy) === String(userId)) break;
+    const creatorCompanyId = String(creator.companyId || creator.id);
+    if (companyId && creatorCompanyId !== companyId) break;
     owners.add(String(creator.createdBy));
     current = String(creator.createdBy);
     iterations++;
@@ -326,6 +329,9 @@ function getLowStock() {
 function saveProduct(product) {
   const products = DB.get('products');
   if (product.id) {
+    const visibleProducts = getProducts();
+    const idxInVisible = visibleProducts.findIndex(p => p.id === product.id);
+    if (idxInVisible < 0) return;
     const idx = products.findIndex(p => p.id === product.id);
     if (idx >= 0) products[idx] = { ...products[idx], ...product };
   } else {
@@ -359,6 +365,8 @@ function saveQuickProduct(name, price, stock, minStock, barcode) {
 }
 
 function deleteProduct(id) {
+  const visibleProducts = getProducts();
+  if (!visibleProducts.find(p => p.id === id)) return;
   const products = DB.get('products').filter(p => p.id !== id);
   DB.set('products', products);
 }
@@ -402,7 +410,7 @@ function deleteSale(id) {
   const sale = sales.find(s => s.id === id);
   if (!sale) return;
   if (!confirm('¿Eliminar venta #' + id + '?')) return;
-  const products = DB.get('products');
+  const products = getProducts();
   const visibleOwners = getVisibleOwners(state.user.id);
   sale.items.forEach(item => {
     const p = products.find(prod => prod.id === item.id);
@@ -411,7 +419,7 @@ function deleteSale(id) {
     }
   });
   DB.set('products', products);
-  DB.set('sales', DB.get('sales').filter(s => s.id !== id));
+  DB.set('sales', getSales().filter(s => s.id !== id));
   alert('Venta eliminada');
   render();
 }
@@ -429,7 +437,7 @@ function updateCartQty(id, qty) {
   const item = state.cart.find(i => i.id === id);
   if (!item) return;
   if (qty > 0) {
-    const product = DB.get('products').find(p => p.id === id);
+    const product = getProducts().find(p => p.id === id);
     if (product && (String(product.createdBy) === String(state.user.id) || getVisibleOwners(state.user.id).has(String(product.createdBy)))) {
       item.quantity = product ? Math.min(qty, product.stock) : qty;
     }
@@ -570,7 +578,7 @@ function completeSale(paymentType, customerData) {
     companyId: String(state.user.companyId || state.user.id),
     created: new Date().toISOString()
   };
-  const products = DB.get('products');
+  const products = getProducts();
   const visibleOwners = getVisibleOwners(state.user.id);
   state.cart.forEach(item => {
     const product = products.find(p => p.id === item.id);
@@ -579,7 +587,7 @@ function completeSale(paymentType, customerData) {
     }
   });
   DB.set('products', products);
-  DB.set('sales', [...DB.get('sales'), sale]);
+  DB.set('sales', [...getSales(), sale]);
   generateInvoice(sale);
   
   // Open cash drawer if enabled (only for contado)
@@ -672,6 +680,9 @@ function getUsers() {
 function saveUser(user) {
   const users = DB.get('users');
   if (user.id) {
+    const visibleUsers = getUsers();
+    const idxInVisible = visibleUsers.findIndex(u => u.id === user.id);
+    if (idxInVisible < 0) return;
     const idx = users.findIndex(u => u.id === user.id);
     if (idx >= 0) users[idx] = { ...users[idx], ...user };
   } else {
@@ -684,6 +695,8 @@ function saveUser(user) {
   DB.set('users', users);
 }
 function deleteUser(id) {
+  const visibleUsers = getUsers();
+  if (!visibleUsers.find(u => u.id === id)) return;
   DB.set('users', DB.get('users').filter(u => u.id !== id));
 }
 
@@ -1370,7 +1383,7 @@ function saveFiado(fiado) {
 }
 
 function getFiadoById(id) {
-  return DB.get('fiados').find(f => f.id === id);
+  return getFiados().find(f => f.id === id);
 }
 
 function addPaymentToFiado(fiadoId, amount) {
@@ -1405,7 +1418,7 @@ function createFiadoFromCart(customerName, customerPhone, notes) {
   const total = roundPeso(subtotal + itbis);
   
   // Decrease stock
-  const products = DB.get('products');
+  const products = getProducts();
   const visibleOwners = getVisibleOwners(state.user.id);
   state.cart.forEach(item => {
     const product = products.find(p => p.id === item.id);
@@ -1634,7 +1647,7 @@ function deleteFiado(id) {
   const fiado = fiados.find(f => f.id === id);
   if (!fiado) return;
   if (!confirm('¿Eliminar credito de ' + (fiado.customerName || 'Cliente') + '? Esta acción no se puede deshacer.')) return;
-  const products = DB.get('products');
+  const products = getProducts();
   const visibleOwners = getVisibleOwners(state.user.id);
   fiado.items.forEach(item => {
     const p = products.find(prod => prod.id === item.id);
@@ -1643,7 +1656,7 @@ function deleteFiado(id) {
     }
   });
   DB.set('products', products);
-  DB.set('fiados', DB.get('fiados').filter(f => f.id !== id));
+  DB.set('fiados', getFiados().filter(f => f.id !== id));
   alert('Credito eliminado');
   render();
 }
@@ -2366,6 +2379,8 @@ function scanProductBarcode(code) {
 function renderLicenses() {
   if (String(state.user.id) !== '1') return '<div class="empty">Acceso denegado</div>';
   const licenses = DB.get('licenses') || [];
+  const companyId = getCompanyId();
+  const visibleLicenses = companyId ? licenses.filter(l => String(l.companyId) === companyId) : licenses;
   const users = getUsers();
   return `
     <div class="header"><h1>Licencias</h1><button class="btn btn-primary" onclick="generateLicense()">+ Nueva Licencia</button></div>
@@ -2373,7 +2388,7 @@ function renderLicenses() {
       <table>
         <thead><tr><th>Clave</th><th>Estado</th><th>Usada por</th><th>Fecha</th><th>Acciones</th></tr></thead>
         <tbody>
-          ${licenses.map(l => {
+          ${visibleLicenses.map(l => {
             const usedByUser = l.usedBy ? users.find(u => String(u.id) === String(l.usedBy)) : null;
             const statusBadge = l.used 
               ? '<span class="badge badge-danger">Usada</span>' 
@@ -2401,7 +2416,7 @@ function generateLicense() {
   const randomPart = Math.random().toString(36).substring(2, 6).toUpperCase() + '-' + Math.random().toString(36).substring(2, 6).toUpperCase();
   const key = prefix + '-' + randomPart;
   const licenses = DB.get('licenses') || [];
-  licenses.push({ key, used: false });
+  licenses.push({ key, used: false, companyId: getCompanyId() || '1' });
   DB.set('licenses', licenses);
   alert('Licencia generada: ' + key);
   render();
