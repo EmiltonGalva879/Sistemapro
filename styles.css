@@ -106,15 +106,9 @@ tr:hover { background: #f8fafc; }
   color: var(--text-secondary);
   margin-bottom: 8px;
 }
-.receipt-fiscal-fields {
-  overflow: hidden;
-  opacity: 0;
-  max-height: 0;
-  transition: all 0.3s ease;
-}
-.receipt-fiscal-fields.visible {
-  opacity: 1;
-  max-height: 100px;
+.receipt-rnc-display {
+  font-size: 13px;
+  color: #1e293b;
 }
 
 .search { display: flex; gap: 12px; margin-bottom: 20px; }
@@ -270,6 +264,24 @@ tr:hover { background: #f8fafc; }
   font-weight: 700;
   font-size: 16px;
   margin-top: 8px;
+}
+.invoice-preview-body .inv-payments {
+  margin-top: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.invoice-preview-body .inv-payment-row {
+  display: flex;
+  justify-content: space-between;
+}
+.invoice-preview-body .inv-payment-row .inv-label {
+  color: #64748b;
+  font-size: 12px;
+}
+.invoice-preview-body .inv-payment-row .inv-value {
+  font-weight: 600;
+  font-size: 14px;
 }
 .invoice-preview-body .inv-footer {
   margin-top: 12px;

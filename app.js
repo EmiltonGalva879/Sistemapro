@@ -72,11 +72,11 @@ async function login(username, password) {
       }
     }
     
-    state.loginError = 'Usuario no encontrado. Verifica tu conexión a internet y desactiva bloqueadores de anuncios.';
+    state.loginError = 'Usuario no encontrado. Verifica tu conexión a internet .';
     render();
     return false;
   } catch (e) {
-    state.loginError = 'Error de conexión. Verifica tu internet y desactiva AdBlock/uBlock.';
+    state.loginError = 'Error de conexión. Verifica tu internet .';
     render();
     return false;
   }
@@ -489,12 +489,8 @@ function showPaymentOptions(mode) {
   render();
 }
 
-function toggleReceiptNote() {
+function updateReceiptType() {
   const receiptType = document.getElementById('receipt-type')?.value || 'normal';
-  const noteRow = document.getElementById('receipt-note-row');
-  if (noteRow) {
-    noteRow.classList.toggle('visible', receiptType === 'fiscal');
-  }
   localStorage.setItem('salesstock_receiptType', receiptType);
 }
 
@@ -549,11 +545,9 @@ function submitSale(paymentType) {
   const notes = document.getElementById('sale-notes')?.value || '';
   const paidAmount = parseFloat(document.getElementById('paid-amount')?.value) || 0;
   const receiptType = document.getElementById('receipt-type')?.value || 'normal';
-  const receiptNote = document.getElementById('receipt-note')?.value || '';
   state.modal = null;
   printWindow = window.open('', '_blank', 'width=800,height=600');
-  const mergedNotes = notes + (receiptNote ? (notes ? ' | ' : '') + receiptNote : '');
-  completeSale(paymentType, { customerName, customerPhone, notes: mergedNotes, paidAmount, receiptType });
+  completeSale(paymentType, { customerName, customerPhone, notes, paidAmount, receiptType });
 }
 
 function submitQuote() {
@@ -561,11 +555,9 @@ function submitQuote() {
   const customerPhone = document.getElementById('customer-phone')?.value || '';
   const notes = document.getElementById('sale-notes')?.value || '';
   const receiptType = document.getElementById('receipt-type')?.value || 'normal';
-  const receiptNote = document.getElementById('receipt-note')?.value || '';
   state.modal = null;
   printWindow = window.open('', '_blank', 'width=800,height=600');
-  const mergedNotes = notes + (receiptNote ? (notes ? ' | ' : '') + receiptNote : '');
-  makeQuote({ customerName, customerPhone, notes: mergedNotes, receiptType });
+  makeQuote({ customerName, customerPhone, notes, receiptType });
 }
 
 function completeSale(paymentType, customerData) {
@@ -919,7 +911,6 @@ function generateQuoteInvoice(quote) {
   y += 5;
   doc.setFont(FONT, 'normal');
   doc.setFontSize(9);
-  if (bizRnc) { doc.text('RNC: ' + bizRnc, PAGE_W / 2, y, { align: 'center' }); y += 4; }
   if (bizPhone) { doc.text('Tel: ' + bizPhone, PAGE_W / 2, y, { align: 'center' }); y += 4; }
   if (bizEmail) { doc.text('Email: ' + bizEmail, PAGE_W / 2, y, { align: 'center' }); y += 4; }
   if (bizAddr) {
@@ -934,8 +925,9 @@ function generateQuoteInvoice(quote) {
   y = pdfTitle(doc, 'COTIZACIÓN', y);
   doc.setFont(FONT, 'normal');
   doc.setFontSize(9);
-  doc.text('N° ' + (quote.customerName ? quote.customerName : quote.id), PAGE_W / 2, y, { align: 'center' });
+   doc.text('N° ' + quote.id, PAGE_W / 2, y, { align: 'center' });
   y += 4;
+  if (quote.receiptType === 'fiscal' && bizRnc) { doc.text('RNC: ' + bizRnc, PAGE_W / 2, y, { align: 'center' }); y += 4; }
   doc.text('Fecha: ' + new Date(quote.created).toLocaleDateString('es-ES'), PAGE_W / 2, y, { align: 'center' });
   y += 4;
   doc.text('Vendedor: ' + quote.user, PAGE_W / 2, y, { align: 'center' });
@@ -1047,7 +1039,6 @@ function buildInvoiceDocument(sale) {
   y += 5;
   doc.setFont(FONT, 'normal');
   doc.setFontSize(9);
-  if (bizRnc) { doc.text('RNC: ' + bizRnc, PAGE_W / 2, y, { align: 'center' }); y += 4; }
   if (bizPhone) { doc.text('Tel: ' + bizPhone, PAGE_W / 2, y, { align: 'center' }); y += 4; }
   if (bizEmail) { doc.text('Email: ' + bizEmail, PAGE_W / 2, y, { align: 'center' }); y += 4; }
   if (bizAddr) {
@@ -1062,8 +1053,12 @@ function buildInvoiceDocument(sale) {
   y = pdfTitle(doc, sale.receiptType === 'fiscal' ? 'COMPROBANTE FISCAL' : 'FACTURA', y);
   doc.setFont(FONT, 'normal');
   doc.setFontSize(9);
-  doc.text('N° ' + (sale.customerName ? sale.customerName : sale.id), PAGE_W / 2, y, { align: 'center' });
+   doc.text('N° ' + sale.id, PAGE_W / 2, y, { align: 'center' });
   y += 4;
+  if (sale.receiptType === 'fiscal' && bizRnc) {
+    doc.text('RNC: ' + bizRnc, PAGE_W / 2, y, { align: 'center' });
+    y += 4;
+  }
   doc.text('Fecha: ' + new Date(sale.created).toLocaleDateString('es-ES') + ' ' + new Date(sale.created).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }), PAGE_W / 2, y, { align: 'center' });
   y += 4;
   doc.text('Cajero: ' + sale.user, PAGE_W / 2, y, { align: 'center' });
@@ -1149,12 +1144,18 @@ function buildInvoiceDocument(sale) {
   if (sale.paidAmount > 0 || sale.change !== undefined) {
     doc.setFont(FONT, 'normal');
     doc.setFontSize(9);
-    doc.text('Pagado:', colTotal, y, { align: 'right' });
-    doc.text(fmtMoneyInvoice(sale.paidAmount || 0), colTotal, y, { align: 'right' });
-    y += 4;
+    doc.text('Pagado:', colTotal, y - 1, { align: 'right' });
+    y += 5;
     doc.setFont(FONT, 'bold');
-    doc.setFontSize(10);
-    doc.text('Cambio:', colTotal, y, { align: 'right' });
+    doc.setFontSize(11);
+    doc.text(fmtMoneyInvoice(sale.paidAmount || 0), colTotal, y, { align: 'right' });
+    y += 5;
+    doc.setFont(FONT, 'normal');
+    doc.setFontSize(9);
+    doc.text('Cambio:', colTotal, y - 1, { align: 'right' });
+    y += 5;
+    doc.setFont(FONT, 'bold');
+    doc.setFontSize(11);
     doc.text(fmtMoneyInvoice(Math.max(0, sale.change || 0)), colTotal, y, { align: 'right' });
     y += 4;
   }
@@ -1804,7 +1805,6 @@ function buildFiadoDocument(fiado) {
   y += 5;
   doc.setFont(FONT, 'normal');
   doc.setFontSize(9);
-  if (bizRnc) { doc.text('RNC: ' + bizRnc, PAGE_W / 2, y, { align: 'center' }); y += 4; }
   if (bizPhone) { doc.text('Tel: ' + bizPhone, PAGE_W / 2, y, { align: 'center' }); y += 4; }
   if (bizEmail) { doc.text('Email: ' + bizEmail, PAGE_W / 2, y, { align: 'center' }); y += 4; }
   if (bizAddr) {
@@ -1819,8 +1819,9 @@ function buildFiadoDocument(fiado) {
   y = pdfTitle(doc, 'FACTURA A CREDITO', y);
   doc.setFont(FONT, 'normal');
   doc.setFontSize(9);
-  doc.text('N° ' + (fiado.customerName ? fiado.customerName : fiado.id), PAGE_W / 2, y, { align: 'center' });
+   doc.text('N° ' + fiado.id, PAGE_W / 2, y, { align: 'center' });
   y += 4;
+  if (bizRnc) { doc.text('RNC: ' + bizRnc, PAGE_W / 2, y, { align: 'center' }); y += 4; }
   doc.text('Fecha: ' + new Date(fiado.created).toLocaleDateString('es-ES') + ' ' + new Date(fiado.created).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' }), PAGE_W / 2, y, { align: 'center' });
   y += 4;
   doc.text('Vendedor: ' + fiado.user, PAGE_W / 2, y, { align: 'center' });
@@ -2130,10 +2131,11 @@ function renderSaleInvoiceHtml(sale) {
   return `
     <div class="inv-header">
       <h1>${bizName}</h1>
-      <div>${bizRnc ? 'RNC: ' + bizRnc + '<br>' : ''}${bizPhone ? 'Tel: ' + bizPhone + '<br>' : ''}${bizEmail ? 'Email: ' + bizEmail + '<br>' : ''}${bizAddr ? 'Dir: ' + bizAddr : ''}</div>
+      <div>${bizPhone ? 'Tel: ' + bizPhone + '<br>' : ''}${bizEmail ? 'Email: ' + bizEmail + '<br>' : ''}${bizAddr ? 'Dir: ' + bizAddr : ''}</div>
     </div>
     <div class="inv-meta">
-      <div><strong>Factura N°:</strong> ${sale.customerName ? sale.customerName : sale.id}</div>
+      <div><strong>Factura N°:</strong> ${sale.id}</div>
+      ${sale.receiptType === 'fiscal' && bizRnc ? '<div><strong>RNC:</strong> ' + bizRnc + '</div>' : ''}
       <div><strong>Fecha:</strong> ${new Date(sale.created).toLocaleDateString('es-ES')} ${new Date(sale.created).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' })}</div>
       <div><strong>Cajero:</strong> ${sale.user}</div>
       <div><strong>Pago:</strong> ${sale.paymentType === 'credito' ? 'Crédito' : 'Contado'}</div>
@@ -2160,6 +2162,12 @@ function renderSaleInvoiceHtml(sale) {
     ${itbisHtml}
     ${creditHtml}
     <div class="inv-total">TOTAL: ${fmtMoneyInvoice(sale.total)}</div>
+    ${sale.paidAmount > 0 || sale.change !== undefined ? `
+    <div class="inv-payments">
+      <div class="inv-payment-row"><span class="inv-label">Pagado:</span><span class="inv-value">${fmtMoneyInvoice(sale.paidAmount || 0)}</span></div>
+      <div class="inv-payment-row"><span class="inv-label">Cambio:</span><span class="inv-value">${fmtMoneyInvoice(Math.max(0, sale.change || 0))}</span></div>
+    </div>
+    ` : ''}
     <div class="inv-footer">
       ${sale.paymentType === 'credito' ? '*** PAGO A CRÉDITO ***<br>Se cobrará 5% extra en 30 días' : '¡GRACIAS POR SU COMPRA!'}
     </div>
@@ -2752,13 +2760,11 @@ function renderModal() {
 
             <div class="receipt-type-section">
               <label class="receipt-type-label">Tipo de Comprobante</label>
-              <select id="receipt-type" class="form-control" onchange="toggleReceiptNote()">
+              <select id="receipt-type" class="form-control" onchange="updateReceiptType()">
                 <option value="normal" ${m.receiptType === 'normal' ? 'selected' : ''}>💵 Comprobante Normal</option>
                 <option value="fiscal" ${m.receiptType === 'fiscal' ? 'selected' : ''}>🧾 Comprobante Fiscal</option>
               </select>
-              <div id="receipt-note-row" class="receipt-fiscal-fields ${m.receiptType === 'fiscal' ? 'visible' : ''}">
-                <input type="text" id="receipt-note" class="form-control" autocomplete="off" placeholder="RNC / NCF" style="margin-top:12px">
-              </div>
+              ${m.receiptType === 'fiscal' ? `<div class="receipt-rnc-display" style="margin-top:10px">RNC: ${localStorage.getItem('salesstock_bizrnc') || '<span style="color:#94a3b8">Sin RNC configurado</span>'}</div>` : ''}
             </div>
 
             ${m.paymentMode === 'sale' ? `
@@ -3040,7 +3046,7 @@ window.deleteLicense = deleteLicense;
 window.deleteLicenseFromBtn = deleteLicenseFromBtn;
 window.showPaymentOptions = showPaymentOptions;
 window.updateChange = updateChange;
-window.toggleReceiptNote = toggleReceiptNote;
+window.updateReceiptType = updateReceiptType;
 window.submitSale = submitSale;
 window.submitQuote = submitQuote;
 window.previewSaleInvoice = previewSaleInvoice;
