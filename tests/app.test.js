@@ -2,8 +2,8 @@ describe('Utils', () => {
   beforeEach(() => {
     window.App = window.App || {};
     window.App.Utils = {
-      fmtMoney: (v) => '$' + v.toFixed(2),
-      fmtMoneyInvoice: (v) => '$' + Math.round(v),
+      fmtMoney: (v) => 'RD$' + v.toFixed(2),
+      fmtMoneyInvoice: (v) => 'RD$ ' + Number(v).toFixed(2),
       round2: (n) => Math.round((Number(n) || 0) * 100) / 100,
       roundPeso: (n) => Math.round(Number(n) || 0),
       fmtDate: (d) => new Date(d).toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
@@ -12,13 +12,13 @@ describe('Utils', () => {
   });
 
   test('fmtMoney formatea decimales', () => {
-    expect(window.App.Utils.fmtMoney(10)).toBe('$10.00');
-    expect(window.App.Utils.fmtMoney(10.5)).toBe('$10.50');
+    expect(window.App.Utils.fmtMoney(10)).toBe('RD$10.00');
+    expect(window.App.Utils.fmtMoney(10.5)).toBe('RD$10.50');
   });
 
-  test('fmtMoneyInvoice redondea a entero', () => {
-    expect(window.App.Utils.fmtMoneyInvoice(10.4)).toBe('$10');
-    expect(window.App.Utils.fmtMoneyInvoice(10.6)).toBe('$11');
+  test('fmtMoneyInvoice muestra 2 decimales', () => {
+    expect(window.App.Utils.fmtMoneyInvoice(10)).toBe('RD$ 10.00');
+    expect(window.App.Utils.fmtMoneyInvoice(10.5)).toBe('RD$ 10.50');
   });
 
   test('round2 redondea a 2 decimales', () => {
@@ -43,22 +43,24 @@ describe('FirebaseAuth', () => {
     window.App = window.App || {};
     window.App.Services = window.App.Services || {};
 
-    const usersStore = [{ id: 1, username: 'Sistemapro', email: 'admin@test.com', password: 'Sistemapro1532', role: 'ADMIN' }];
+    const authUsers = [{ uid: 1, email: 'admin@sistema.local', password: 'test-password-123' }];
+    const firestoreUsers = [{ id: 1, username: 'Sistemapro', email: 'admin@sistema.local', role: 'ADMIN' }];
     window.App.Services.DB = {
-      _cache: { users: usersStore },
+      _cache: { users: firestoreUsers },
       get(key) { return this._cache[key] || []; },
       set(key, data) { this._cache[key] = data; }
     };
 
     window.FB_AUTH = {
-      async createUserWithEmailAndPassword(email) {
+      async createUserWithEmailAndPassword(email, password) {
         const user = { uid: 'u_' + Date.now(), email };
+        authUsers.push({ uid: user.uid, email, password });
         return { user };
       },
       async signInWithEmailAndPassword(email, password) {
-        const found = usersStore.find(u => u.email === email && u.password === password);
+        const found = authUsers.find(u => u.email === email && u.password === password);
         if (!found) throw { code: 'auth/wrong-password' };
-        return { user: { uid: found.id, email: found.email } };
+        return { user: { uid: found.uid, email: found.email } };
       },
       async signInWithPopup() {
         return { user: { uid: 'g_1', email: 'google@test.com' } };
@@ -67,24 +69,23 @@ describe('FirebaseAuth', () => {
   });
 
   test('register crea usuario y lo guarda', async () => {
-    const FirebaseAuth = require('../../services/firebase-auth.service.js') ||
-      (window.App.Services.FirebaseAuth);
+    require('../js/services/firebase-auth.service.js');
     const svc = window.App.Services.FirebaseAuth;
     const before = window.App.Services.DB.get('users').length;
-    const profile = await svc.register('nuevo@test.com', 'secret123');
+    const profile = await svc.register('nuevo', 'secret123');
     const after = window.App.Services.DB.get('users').length;
     expect(after).toBe(before + 1);
-    expect(profile.email).toBe('nuevo@test.com');
+    expect(profile.email).toBe('nuevo@sistema.local');
   });
 
   test('login con credenciales correctas retorna perfil', async () => {
     const svc = window.App.Services.FirebaseAuth;
-    const profile = await svc.login('admin@test.com', 'Sistemapro1532');
-    expect(profile.email).toBe('admin@test.com');
+    const profile = await svc.login('admin', 'test-password-123');
+    expect(profile.email).toBe('admin@sistema.local');
   });
 
   test('login con password incorrecta lanza error', async () => {
     const svc = window.App.Services.FirebaseAuth;
-    await expect(svc.login('admin@test.com', 'bad')).rejects.toBeDefined();
+    await expect(svc.login('admin', 'bad')).rejects.toBeDefined();
   });
 });

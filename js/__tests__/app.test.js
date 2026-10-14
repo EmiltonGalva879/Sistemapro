@@ -2,8 +2,8 @@ describe('Utils', () => {
   beforeEach(() => {
     window.App = window.App || {};
     window.App.Utils = {
-      fmtMoney: (v) => '$' + v.toFixed(2),
-      fmtMoneyInvoice: (v) => '$' + Math.round(v),
+      fmtMoney: (v) => 'RD$' + v.toFixed(2),
+      fmtMoneyInvoice: (v) => 'RD$ ' + Number(v).toFixed(2),
       round2: (n) => Math.round((Number(n) || 0) * 100) / 100,
       roundPeso: (n) => Math.round(Number(n) || 0),
       fmtDate: (d) => new Date(d).toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
@@ -12,13 +12,13 @@ describe('Utils', () => {
   });
 
   test('fmtMoney formatea decimales', () => {
-    expect(window.App.Utils.fmtMoney(10)).toBe('$10.00');
-    expect(window.App.Utils.fmtMoney(10.5)).toBe('$10.50');
+    expect(window.App.Utils.fmtMoney(10)).toBe('RD$10.00');
+    expect(window.App.Utils.fmtMoney(10.5)).toBe('RD$10.50');
   });
 
-  test('fmtMoneyInvoice redondea a entero', () => {
-    expect(window.App.Utils.fmtMoneyInvoice(10.4)).toBe('$10');
-    expect(window.App.Utils.fmtMoneyInvoice(10.6)).toBe('$11');
+  test('fmtMoneyInvoice muestra 2 decimales', () => {
+    expect(window.App.Utils.fmtMoneyInvoice(10)).toBe('RD$ 10.00');
+    expect(window.App.Utils.fmtMoneyInvoice(10.5)).toBe('RD$ 10.50');
   });
 
   test('round2 redondea a 2 decimales', () => {
@@ -47,7 +47,7 @@ describe('DB', () => {
       set(key, data) { localStorage.setItem('salesstock_' + key, JSON.stringify(data)); },
       init() {
         if (!localStorage.getItem('salesstock_initialized')) {
-          this.set('users', [{ id: 1, username: 'Sistemapro', password: 'Sistemapro1532', role: 'ADMIN', created: new Date().toISOString() }]);
+          this.set('users', [{ id: 1, username: 'Sistemapro', email: 'Sistemapro@sistema.local', role: 'ADMIN', created: new Date().toISOString() }]);
           this.set('products', []);
           this.set('sales', []);
           this.set('fiados', []);
@@ -124,7 +124,7 @@ describe('Auth', () => {
       set(key, data) { localStorage.setItem('salesstock_' + key, JSON.stringify(data)); },
       init() {
         if (!localStorage.getItem('salesstock_initialized')) {
-          this.set('users', [{ id: 1, username: 'Sistemapro', password: 'Sistemapro1532', role: 'ADMIN', created: new Date().toISOString() }]);
+          this.set('users', [{ id: 1, username: 'Sistemapro', email: 'Sistemapro@sistema.local', role: 'ADMIN', created: new Date().toISOString() }]);
           this.set('products', []);
           this.set('sales', []);
           this.set('fiados', []);
@@ -148,19 +148,34 @@ describe('Auth', () => {
     window.App.Services.Audit = {
       log() {}
     };
+    window.render = jest.fn();
+    window.App.Services.FirebaseAuth = {
+      login: jest.fn(),
+      logout: jest.fn(() => {
+        window.App.state.user = null;
+        window.App.state.page = 'login';
+        window.App.state.loginError = '';
+        window.render();
+      })
+    };
   });
 
-  test('login exitoso con credenciales correctas', () => {
-    window.render = jest.fn();
-    const result = window.App.Services.Auth.login('Sistemapro', 'Sistemapro1532');
+  test('login exitoso con credenciales correctas', async () => {
+    const profile = { id: '1', username: 'Sistemapro', email: 'Sistemapro@sistema.local', role: 'ADMIN', licensed: true };
+    window.App.Services.FirebaseAuth.login.mockResolvedValue(profile);
+
+    const result = await window.login('Sistemapro', 'somepassword');
     expect(result).toBe(true);
     expect(window.App.state.user.username).toBe('Sistemapro');
     expect(window.App.state.page).toBe('sales');
   });
 
-  test('login falla con credenciales incorrectas', () => {
-    window.render = jest.fn();
-    const result = window.App.Services.Auth.login('wrong', 'wrong');
+  test('login falla con credenciales incorrectas', async () => {
+    const error = new Error('auth/wrong-password');
+    error.code = 'auth/wrong-password';
+    window.App.Services.FirebaseAuth.login.mockRejectedValue(error);
+
+    const result = await window.login('wrong', 'wrong');
     expect(result).toBe(false);
     expect(window.App.state.user).toBeNull();
     expect(window.App.state.loginError).toBe('Credenciales incorrectas');
@@ -169,8 +184,7 @@ describe('Auth', () => {
   test('logout limpia el estado', () => {
     window.App.state.user = { username: 'test' };
     window.App.state.page = 'sales';
-    window.render = jest.fn();
-    window.App.Services.Auth.logout();
+    window.App.Services.FirebaseAuth.logout();
     expect(window.App.state.user).toBeNull();
     expect(window.App.state.page).toBe('login');
   });

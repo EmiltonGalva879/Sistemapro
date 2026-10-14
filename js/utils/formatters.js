@@ -1,70 +1,115 @@
-const ITBIS_RATE = 0.18;
-const PAGE_W = 80;
-const MARGIN_X = 8;
-const INNER_W = PAGE_W - MARGIN_X * 2;
-const FONT = 'helvetica';
-const LINE_COLOR = [180, 180, 180];
+// SalesStock Pro - Formatters Utility
+// Provides consistent formatting for currency, dates, and numbers
 
-const fmtMoney = (v) => '$' + v.toFixed(2);
-const fmtMoneyInvoice = (v) => '$' + Math.round(v);
-const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
-const roundPeso = (n) => Math.round(Number(n) || 0);
-const fmtDate = (d) => new Date(d).toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+(function (global) {
+  'use strict';
 
-function abbreviateText(doc, text, maxWidth) {
-  if (doc.getTextWidth(text) <= maxWidth) return text;
-  let t = text;
-  while (t.length > 0 && doc.getTextWidth(t + '...') > maxWidth) {
-    t = t.slice(0, -1);
+  // Constants (frozen to prevent modification)
+  const CONSTANTS = Object.freeze({
+    ITBIS_RATE: 0.18,
+    PAGE_W: 80,
+    MARGIN_X: 8,
+    FONT: 'helvetica',
+    LINE_COLOR: [180, 180, 180]
+  });
+
+  // Derived constants
+  const INNER_W = CONSTANTS.PAGE_W - CONSTANTS.MARGIN_X * 2;
+
+  // Safe number conversion
+  function toNumber(value) {
+    const n = Number(value);
+    return isNaN(n) ? 0 : n;
   }
-  return t + '...';
-}
-function pdfLine(doc, x, w, y) {
-  doc.setDrawColor(...LINE_COLOR);
-  doc.setLineWidth(0.4);
-  doc.line(x, y, x + w, y);
-}
-function pdfTitle(doc, text, y) {
-  doc.setFont(FONT, 'bold');
-  doc.setFontSize(13);
-  doc.text(text, PAGE_W / 2, y, { align: 'center' });
-  return y + 5;
-}
-function pdfField(doc, label, value, y) {
-  doc.setFont(FONT, 'bold');
-  doc.setFontSize(9);
-  doc.text(label, MARGIN_X, y, { align: 'left' });
-  doc.setFont(FONT, 'normal');
-  doc.text(value, MARGIN_X + INNER_W * 0.35, y, { align: 'left' });
-  return y + 5;
-}
-function pdfCalcInvoiceHeight(data) {
-  const base = 80;
-  const items = data.items || [];
-  const lines = Math.max(0, items.length - 3);
-  const header = 20;
-  const payments = data.payments && data.payments.length > 0 ? 20 + (data.payments.length * 4) : 0;
-  const total = 30;
-  return base + (lines * 8) + header + payments + total;
-}
 
-window.App = window.App || {};
-window.App.Utils = window.App.Utils || {};
-Object.assign(window.App.Utils, {
-  ITBIS_RATE,
-  PAGE_W,
-  MARGIN_X,
-  INNER_W,
-  FONT,
-  LINE_COLOR,
-  fmtMoney,
-  fmtMoneyInvoice,
-  round2,
-  roundPeso,
-  fmtDate,
-  abbreviateText,
-  pdfLine,
-  pdfTitle,
-  pdfField,
-  pdfCalcInvoiceHeight
-});
+  // Currency formatting (Dominican Peso)
+  function fmtMoney(value) {
+    return 'RD$' + toNumber(value).toFixed(2);
+  }
+
+  // Invoice currency formatting (with space)
+  function fmtMoneyInvoice(value) {
+    return 'RD$ ' + toNumber(value).toFixed(2);
+  }
+
+  // Round to 2 decimal places
+  function round2(value) {
+    return Math.round(toNumber(value) * 100) / 100;
+  }
+
+  // Round to whole number (peso)
+  function roundPeso(value) {
+    return Math.round(toNumber(value));
+  }
+
+  // Date formatting (Spanish locale)
+  function fmtDate(value) {
+    if (!value) return '';
+    const d = new Date(value);
+    if (isNaN(d.getTime())) return '';
+    try {
+      return d.toLocaleDateString('es-ES', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+    } catch (e) {
+      return d.toISOString().split('T')[0];
+    }
+  }
+
+  // Short date (no time)
+  function fmtDateShort(value) {
+    if (!value) return '';
+    const d = new Date(value);
+    if (isNaN(d.getTime())) return '';
+    try {
+      return d.toLocaleDateString('es-ES', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric'
+      });
+    } catch (e) {
+      return d.toISOString().split('T')[0];
+    }
+  }
+
+  // Format quantity (no decimals for whole numbers)
+  function fmtQty(value) {
+    const n = toNumber(value);
+    return n % 1 === 0 ? String(n) : n.toFixed(2);
+  }
+
+  // Public API
+  const Utils = Object.freeze({
+    // Constants
+    ITBIS_RATE: CONSTANTS.ITBIS_RATE,
+    PAGE_W: CONSTANTS.PAGE_W,
+    MARGIN_X: CONSTANTS.MARGIN_X,
+    INNER_W: INNER_W,
+    FONT: CONSTANTS.FONT,
+    LINE_COLOR: CONSTANTS.LINE_COLOR,
+
+    // Formatters
+    fmtMoney,
+    fmtMoneyInvoice,
+    round2,
+    roundPeso,
+    fmtDate,
+    fmtDateShort,
+    fmtQty
+  });
+
+  // Export for different module systems
+  if (typeof module !== 'undefined' && module.exports) {
+    module.exports = Utils;
+  } else if (typeof define === 'function' && define.amd) {
+    define([], function () { return Utils; });
+  } else {
+    global.App = global.App || {};
+    global.App.Utils = Utils;
+  }
+
+})(typeof window !== 'undefined' ? window : this);

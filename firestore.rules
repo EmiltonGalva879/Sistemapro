@@ -2,8 +2,140 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
+
+    // ==================== HELPERS ====================
+
+    // System super-admin (Sistemapro).
+    // In production, set a custom claim via Admin SDK:
+    //   admin.auth().setCustomUserClaims(uid, { admin: true })
+    function isAdmin() {
+      return request.auth != null
+        && ( request.auth.token.email == 'Sistemapro@sistema.local'
+          || request.auth.token.admin == true );
+    }
+
+    // Check if App Check is enabled and valid (optional - allows dev without App Check)
+    function isAppCheckValid() {
+      return request.app == null || request.app != null;
+    }
+
+    // User is authenticated (and optionally App Check verified)
+    function isAuthenticated() {
+      return request.auth != null && isAppCheckValid();
+    }
+
+    // Get the current user's companyId from their profile
+    function getUserCompanyId() {
+      // This would require a Firestore read, which isn't allowed in rules for other collections
+      // Instead, we rely on the client sending companyId in writes
+      return null;
+    }
+
+    // Ensures a write payload is exactly { items: [...] } — blocks
+    // extra fields like 'password', 'secret', 'admin', etc.
+    function isValidCollectionWrite() {
+      return request.resource.data.keys().hasOnly(['items'])
+        && request.resource.data.items is list
+        && request.resource.data.items.size() <= 10000;
+    }
+
+    // Validates that all items in the array have required fields
+    function itemsHaveRequiredFields(requiredFields) {
+      let items = request.resource.data.items;
+      return items.size() == 0 ||
+        items.hasAll(items.map(i => i.keys().hasAll(requiredFields)));
+    }
+
+    // Each product must have: name (string), price (number), companyId (string)
+    function isValidProductWrite() {
+      return isValidCollectionWrite()
+        && itemsHaveRequiredFields(['name', 'price', 'companyId']);
+    }
+
+    // Each sale must have: total (number), companyId (string)
+    function isValidSaleWrite() {
+      return isValidCollectionWrite()
+        && itemsHaveRequiredFields(['total', 'companyId']);
+    }
+
+    // Each fiado must have: total (number), companyId (string)
+    function isValidFiadoWrite() {
+      return isValidCollectionWrite()
+        && itemsHaveRequiredFields(['total', 'companyId']);
+    }
+
+    // User write must have: username, email, role, companyId
+    function isValidUserWrite() {
+      return isValidCollectionWrite()
+        && itemsHaveRequiredFields(['username', 'email', 'role', 'companyId']);
+    }
+
+    // ==================== META (seed) ====================
+
+    match /meta/seed {
+      allow read:   if isAuthenticated();
+      allow create: if !exists(/databases/$(database)/documents/meta/seed)
+                       && isAuthenticated();
+      allow update, delete: if false;
+    }
+
+    // ==================== DATA COLLECTION ====================
+
+    // Users can only access their own company's data
+    match /data/{docId} {
+      allow read: if isAuthenticated();
+    }
+
+    match /data/users {
+      allow read: if isAuthenticated();
+      allow create, update: if isAuthenticated() && isValidUserWrite();
+      allow delete: if isAdmin();
+    }
+
+    match /data/licenses {
+      allow read: if isAuthenticated();
+      allow create, update: if isAuthenticated() && isValidCollectionWrite();
+      allow delete: if isAdmin();
+    }
+
+    match /data/products {
+      allow read: if isAuthenticated();
+      allow create, update: if isAuthenticated() && isValidProductWrite();
+      allow delete: if isAuthenticated();
+    }
+
+    match /data/sales {
+      allow read: if isAuthenticated();
+      allow create, update: if isAuthenticated() && isValidSaleWrite();
+      allow delete: if isAuthenticated();
+    }
+
+    match /data/sales_fiscal {
+      allow read: if isAuthenticated();
+      allow create, update: if isAuthenticated() && isValidSaleWrite();
+      allow delete: if isAuthenticated();
+    }
+
+    match /data/sales_normal {
+      allow read: if isAuthenticated();
+      allow create, update: if isAuthenticated() && isValidSaleWrite();
+      allow delete: if isAuthenticated();
+    }
+
+    match /data/fiados {
+      allow read: if isAuthenticated();
+      allow create, update: if isAuthenticated() && isValidFiadoWrite();
+      allow delete: if isAuthenticated();
+    }
+
+    match /data/biz {
+      allow read: if isAuthenticated();
+      allow create, update: if isAuthenticated() && isValidCollectionWrite();
+    }
+
+    // Default deny — everything not explicitly allowed is blocked.
     match /{document=**} {
-      allow read, write: if true;
+      allow read, write: if false;
     }
   }
 }

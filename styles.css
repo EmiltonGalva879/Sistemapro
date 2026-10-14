@@ -93,6 +93,30 @@ tr:hover { background: #f8fafc; }
 .form-control:focus { outline: none; border-color: var(--primary); }
 .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 
+.receipt-type-section {
+  background: #f8fafc;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px 20px;
+  margin-bottom: 20px;
+}
+.receipt-type-label {
+  font-weight: 500;
+  font-size: 13px;
+  color: var(--text-secondary);
+  margin-bottom: 8px;
+}
+.receipt-fiscal-fields {
+  overflow: hidden;
+  opacity: 0;
+  max-height: 0;
+  transition: all 0.3s ease;
+}
+.receipt-fiscal-fields.visible {
+  opacity: 1;
+  max-height: 100px;
+}
+
 .search { display: flex; gap: 12px; margin-bottom: 20px; }
 .search-input { flex: 1; padding: 12px 16px; border: 1px solid var(--border); border-radius: 8px; font-size: 14px; }
 .search-input:focus { outline: none; border-color: var(--primary); }

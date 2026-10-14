@@ -371,11 +371,14 @@ function deleteProduct(id) {
   DB.set('products', products);
 }
 
-function getSales() { 
-  const sales = DB.get('sales');
+function getSales() {
+  const sales = DB.get('sales') || [];
+  const fiscalSales = DB.get('sales_fiscal') || [];
+  const normalSales = DB.get('sales_normal') || [];
+  const all = [...sales, ...fiscalSales, ...normalSales];
   const companyId = getCompanyId();
-  if (!companyId) return sales;
-  return sales.filter(s => String(s.companyId) === companyId);
+  if (!companyId) return all;
+  return all.filter(s => String(s.companyId) === companyId);
 }
 function getVisibleSales() {
   const sales = getSales();
@@ -420,6 +423,8 @@ function deleteSale(id) {
   });
   DB.set('products', products);
   DB.set('sales', getSales().filter(s => s.id !== id));
+  DB.set('sales_fiscal', (DB.get('sales_fiscal') || []).filter(s => s.id !== id));
+  DB.set('sales_normal', (DB.get('sales_normal') || []).filter(s => s.id !== id));
   alert('Venta eliminada');
   render();
 }
@@ -472,14 +477,25 @@ function showPaymentOptions(mode) {
   const subtotal = getCartTotal();
   const itbis = subtotal * ITBIS_RATE;
   const total = subtotal + itbis;
+  const receiptType = localStorage.getItem('salesstock_receiptType') || 'normal';
   state.modal = {
     type: 'payment',
     subtotal: subtotal,
     itbis: itbis,
     total: total,
-    paymentMode: mode || 'sale'
+    paymentMode: mode || 'sale',
+    receiptType: receiptType
   };
   render();
+}
+
+function toggleReceiptNote() {
+  const receiptType = document.getElementById('receipt-type')?.value || 'normal';
+  const noteRow = document.getElementById('receipt-note-row');
+  if (noteRow) {
+    noteRow.classList.toggle('visible', receiptType === 'fiscal');
+  }
+  localStorage.setItem('salesstock_receiptType', receiptType);
 }
 
 function updateChange() {
@@ -532,18 +548,24 @@ function submitSale(paymentType) {
   const customerPhone = document.getElementById('customer-phone')?.value || '';
   const notes = document.getElementById('sale-notes')?.value || '';
   const paidAmount = parseFloat(document.getElementById('paid-amount')?.value) || 0;
+  const receiptType = document.getElementById('receipt-type')?.value || 'normal';
+  const receiptNote = document.getElementById('receipt-note')?.value || '';
   state.modal = null;
   printWindow = window.open('', '_blank', 'width=800,height=600');
-  completeSale(paymentType, { customerName, customerPhone, notes, paidAmount });
+  const mergedNotes = notes + (receiptNote ? (notes ? ' | ' : '') + receiptNote : '');
+  completeSale(paymentType, { customerName, customerPhone, notes: mergedNotes, paidAmount, receiptType });
 }
 
 function submitQuote() {
   const customerName = document.getElementById('customer-name')?.value || '';
   const customerPhone = document.getElementById('customer-phone')?.value || '';
   const notes = document.getElementById('sale-notes')?.value || '';
+  const receiptType = document.getElementById('receipt-type')?.value || 'normal';
+  const receiptNote = document.getElementById('receipt-note')?.value || '';
   state.modal = null;
   printWindow = window.open('', '_blank', 'width=800,height=600');
-  makeQuote({ customerName, customerPhone, notes });
+  const mergedNotes = notes + (receiptNote ? (notes ? ' | ' : '') + receiptNote : '');
+  makeQuote({ customerName, customerPhone, notes: mergedNotes, receiptType });
 }
 
 function completeSale(paymentType, customerData) {
@@ -554,6 +576,7 @@ function completeSale(paymentType, customerData) {
   const itbis = subtotal * ITBIS_RATE;
   const interest = isCredit ? subtotal * 0.05 : 0;
   const finalTotal = subtotal + itbis + interest;
+  const receiptType = customerData.receiptType || 'normal';
 
   const sale = {
     id: Date.now(),
@@ -576,6 +599,7 @@ function completeSale(paymentType, customerData) {
     paidAmount: customerData.paidAmount || 0,
     change: (customerData.paidAmount || 0) - finalTotal,
     companyId: String(state.user.companyId || state.user.id),
+    receiptType: receiptType,
     created: new Date().toISOString()
   };
   const products = getProducts();
@@ -587,17 +611,23 @@ function completeSale(paymentType, customerData) {
     }
   });
   DB.set('products', products);
-  DB.set('sales', [...getSales(), sale]);
+  saveSaleToCollection(sale, receiptType);
   generateInvoice(sale);
-  
-  // Open cash drawer if enabled (only for contado)
+
   if (!isCredit && localStorage.getItem('salesstock_cashdrawer') === 'yes') {
     openCashDrawer();
   }
-  
+
   state.cart = [];
   state.modal = null;
   render();
+}
+
+function saveSaleToCollection(sale, receiptType) {
+  const targetCollection = receiptType === 'fiscal' ? 'sales_fiscal' : 'sales_normal';
+  const existing = DB.get(targetCollection) || [];
+  DB.set(targetCollection, [...existing, sale]);
+  DB.set('sales', [...(DB.get('sales') || []), sale]);
 }
 
 let html5QrCode = null;
@@ -606,19 +636,52 @@ function startCameraScan() {
   state.modal = { type: 'camera' };
   render();
   setTimeout(() => {
-    html5QrCode = new Html5Qrcode("camera-reader");
-    const config = { fps: 10, qrbox: 250 };
-    html5QrCode.start(
-      { facingMode: "environment" },
-      config,
-      (decodedText, decodedResult) => {
-        html5QrCode.stop();
-        state.modal = null;
-        scanProductBarcode(decodedText);
-      },
-      (errorMessage) => {}
-    );
-  }, 500);
+    try {
+      html5QrCode = new Html5Qrcode("camera-reader");
+      const config = {
+        fps: 15,
+        qrbox: { width: 280, height: 280 },
+        formats: Html5QrcodeSupportedFormats ? [
+          Html5QrcodeSupportedFormats.EAN_13,
+          Html5QrcodeSupportedFormats.EAN_8,
+          Html5QrcodeSupportedFormats.CODE_128,
+          Html5QrcodeSupportedFormats.CODE_39,
+          Html5QrcodeSupportedFormats.QR_CODE
+        ] : []
+      };
+      html5QrCode.start(
+        { facingMode: "environment" },
+        config,
+        (decodedText, decodedResult) => {
+          if (html5QrCode) {
+            html5QrCode.stop().catch(() => {});
+          }
+          state.modal = null;
+          scanProductBarcode(decodedText);
+        },
+        (errorMessage) => {
+          // Silent - barcode not found in frame, keep scanning
+        }
+      ).catch(() => {
+        // Fallback: try without facingMode constraint
+        html5QrCode.start(
+          {},
+          config,
+          (decodedText, decodedResult) => {
+            if (html5QrCode) {
+              html5QrCode.stop().catch(() => {});
+            }
+            state.modal = null;
+            scanProductBarcode(decodedText);
+          },
+          (errorMessage) => {}
+        );
+      });
+    } catch (e) {
+      console.error('[CameraScan] Error starting scanner:', e);
+      alert('Error al iniciar el escáner: ' + e.message);
+    }
+  }, 100);
 }
 
 function stopCameraScan() {
@@ -640,6 +703,7 @@ function makeQuote(customerData) {
     customerName: customerData.customerName || '',
     customerPhone: customerData.customerPhone || '',
     notes: customerData.notes || '',
+    receiptType: customerData.receiptType || 'normal',
     created: new Date().toISOString()
   };
   generateQuoteInvoice(quote);
@@ -995,7 +1059,7 @@ function buildInvoiceDocument(sale) {
   pdfLine(doc, MARGIN_X, INNER_W, y);
   y += 4;
 
-  y = pdfTitle(doc, 'FACTURA', y);
+  y = pdfTitle(doc, sale.receiptType === 'fiscal' ? 'COMPROBANTE FISCAL' : 'FACTURA', y);
   doc.setFont(FONT, 'normal');
   doc.setFontSize(9);
   doc.text('N° ' + (sale.customerName ? sale.customerName : sale.id), PAGE_W / 2, y, { align: 'center' });
@@ -1916,7 +1980,7 @@ function renderDashboard() {
     <div class="grid-2">
       <div class="card">
         <div class="card-header"><h2 class="card-title">Últimas Ventas</h2><button class="btn btn-secondary btn-sm" onclick="showAllSalesModal()">Ver todas</button></div>
-        ${recent.length ? `<table><thead><tr><th>Cliente / ID</th><th>Fecha</th><th>Total</th><th>Usuario</th><th></th></tr></thead><tbody>${recent.slice(0,5).map(s=>`<tr><td><strong>${s.customerName ? s.customerName : '#'+s.id}</strong></td><td>${fmtDate(s.created)}</td><td class="text-success" style="font-weight:600">${fmtMoneyInvoice(s.total)}</td><td>${s.user}</td><td><button class="btn btn-info btn-sm" onclick="previewSaleInvoice(${s.id})" title="Ver factura">👁️</button> <button class="btn btn-danger btn-sm" onclick="promptDeleteSale(${s.id})">🗑️</button></td></tr>`).join('')}</tbody></table>` : '<div class="empty">No hay ventas recientes</div>'}
+        ${recent.length ? `<table><thead><tr><th>Cliente / ID</th><th>Fecha</th><th>Total</th><th>Usuario</th><th>Tipo</th><th></th></tr></thead><tbody>${recent.slice(0,5).map(s=>`<tr><td><strong>${s.customerName ? s.customerName : '#'+s.id}</strong></td><td>${fmtDate(s.created)}</td><td class="text-success" style="font-weight:600">${fmtMoneyInvoice(s.total)}</td><td>${s.user}</td><td>${s.receiptType === 'fiscal' ? '<span style="color:#3b82f6;font-weight:600">Fiscal</span>' : '<span style="color:#64748b">Normal</span>'}</td><td><button class="btn btn-info btn-sm" onclick="previewSaleInvoice(${s.id})" title="Ver factura">👁️</button> <button class="btn btn-danger btn-sm" onclick="promptDeleteSale(${s.id})">🗑️</button></td></tr>`).join('')}</tbody></table>` : '<div class="empty">No hay ventas recientes</div>'}
       </div>
     </div>
     ${state.salesListHtml ? `<div class="sales-list-overlay" onclick="state.salesListHtml='';render()"><div class="sales-list-modal" onclick="event.stopPropagation()"><div class="sales-list-header"><h2>Todas las Facturas</h2><button class="btn btn-secondary" onclick="state.salesListHtml='';render()">✕</button></div><div class="sales-list-body">${state.salesListHtml}</div></div></div>` : ''}
@@ -1977,6 +2041,7 @@ function buildSalesListHtml(sales) {
       <td>${fmtMoneyInvoice(s.itbis || 0)}</td>
       <td class="text-success" style="font-weight:600">${fmtMoneyInvoice(s.total)}</td>
       <td>${s.user}</td>
+      <td>${s.receiptType === 'fiscal' ? '<span style="color:#3b82f6;font-weight:600">Fiscal</span>' : '<span style="color:#64748b">Normal</span>'}</td>
       <td>
         <button class="btn btn-info btn-sm" onclick="previewSaleInvoice(${s.id}); state.salesListHtml=''; render();" title="Ver factura">👁️</button>
         <button class="btn btn-danger btn-sm" onclick="if(confirm('¿Eliminar venta #${s.id}?')){promptDeleteSale(${s.id}); state.salesListHtml=''; render();}">🗑️</button>
@@ -1998,6 +2063,7 @@ function buildSalesListHtml(sales) {
             <th>ITBIS</th>
             <th>Total</th>
             <th>Usuario</th>
+            <th>Tipo</th>
             <th></th>
           </tr>
         </thead>
@@ -2293,18 +2359,18 @@ function findProduct(query) {
   if (companyId) {
     const filtered = products.filter(p => String(p.companyId) === companyId);
     query = query.toLowerCase().trim();
-    if (!q) return null;
+    if (!query) return null;
     
     // 1. Búsqueda EXACTA por código de barras
     let product = filtered.find(p => p.barcode === query);
     if (product) return product;
     
     // 2. Búsqueda PARCIAL por código de barras
-    product = filtered.find(p => p.barcode && p.barcode.toLowerCase().includes(q));
+    product = filtered.find(p => p.barcode && p.barcode.toLowerCase().includes(query));
     if (product) return product;
     
     // 3. Búsqueda por nombre (parcial, sin distinción de mayúsculas)
-    product = filtered.find(p => p.name.toLowerCase().includes(q));
+    product = filtered.find(p => p.name.toLowerCase().includes(query));
     if (product) return product;
     
     return null;
@@ -2683,6 +2749,27 @@ function renderModal() {
               <label>Notas</label>
               <textarea id="sale-notes" class="form-control" rows="2" autocomplete="off" placeholder="Información adicional, instrucciones especiales..."></textarea>
             </div>
+
+            <div class="receipt-type-section">
+              <label class="receipt-type-label">Tipo de Comprobante</label>
+              <select id="receipt-type" class="form-control" onchange="toggleReceiptNote()">
+                <option value="normal" ${m.receiptType === 'normal' ? 'selected' : ''}>💵 Comprobante Normal</option>
+                <option value="fiscal" ${m.receiptType === 'fiscal' ? 'selected' : ''}>🧾 Comprobante Fiscal</option>
+              </select>
+              <div id="receipt-note-row" class="receipt-fiscal-fields ${m.receiptType === 'fiscal' ? 'visible' : ''}">
+                <input type="text" id="receipt-note" class="form-control" autocomplete="off" placeholder="RNC / NCF" style="margin-top:12px">
+              </div>
+            </div>
+
+            ${m.paymentMode === 'sale' ? `
+              <div class="form-group" style="margin-bottom:20px">
+                <label>Monto pagado por el cliente</label>
+                <input type="number" id="paid-amount" class="form-control" placeholder="0.00" step="0.01" oninput="updateChange()">
+              </div>
+              <div id="change-display" style="background:#f0fdf4;border:1px solid #bbf7d0;color:#166534;padding:12px;border-radius:8px;margin-bottom:20px;display:none;text-align:center;font-weight:700;font-size:16px">
+                Cambio: RD$ 0.00
+              </div>
+            ` : ''}
             <div style="background:#f8fafc;padding:16px;border-radius:8px;margin-bottom:20px">
               <div style="display:flex;flex-direction:column;gap:6px">
                  <div style="display:flex;justify-content:space-between">
@@ -2699,29 +2786,20 @@ function renderModal() {
                  </div>
               </div>
             </div>
-            ${m.paymentMode === 'sale' ? `
-              <div class="form-group" style="margin-bottom:20px">
-                <label>Monto pagado por el cliente</label>
-                <input type="number" id="paid-amount" class="form-control" placeholder="0.00" step="0.01" oninput="updateChange()">
-              </div>
-              <div id="change-display" style="background:#f0fdf4;border:1px solid #bbf7d0;color:#166534;padding:12px;border-radius:8px;margin-bottom:20px;display:none;text-align:center;font-weight:700;font-size:16px">
-                Cambio: RD$ 0.00
-              </div>
-            ` : ''}
             <p style="margin-bottom:20px;color:#64748b;font-size:12px">
               ${m.paymentMode === 'sale' ? 'Seleccione la forma de pago:' : 'Generar cotización sin pago:'}
             </p>
-            <div style="display:flex;flex-direction:column;gap:15px">
-              ${m.paymentMode === 'sale' ? `
-                 <button class="btn btn-success" style="padding:20px;font-size:18px" onclick="submitSale('contado')">
+            <div style="display:flex;flex-direction:column;gap:12px">
+               ${m.paymentMode === 'sale' ? `
+                 <button class="btn btn-success" style="padding:14px;font-size:15px" onclick="submitSale('contado')">
                    💵 Cobrar
-                   <div style="font-size:14px;font-weight:normal;margin-top:5px">Total: ${fmtMoneyInvoice(m.subtotal + m.itbis)}</div>
+                   <div style="font-size:12px;font-weight:normal;margin-top:4px">Total: ${fmtMoneyInvoice(m.subtotal + m.itbis)}</div>
                  </button>
               ` : ''}
               ${m.paymentMode === 'quote' ? `
-                <button class="btn btn-secondary" style="padding:20px;font-size:18px" onclick="submitQuote()">
+                <button class="btn btn-secondary" style="padding:14px;font-size:15px" onclick="submitQuote()">
                   📄 Generar Cotización
-                  <div style="font-size:13px;font-weight:normal;margin-top:5px">Guardar como borrador sin pago</div>
+                  <div style="font-size:12px;font-weight:normal;margin-top:4px">Guardar como borrador sin pago</div>
                 </button>
               ` : ''}
             </div>
@@ -2962,6 +3040,7 @@ window.deleteLicense = deleteLicense;
 window.deleteLicenseFromBtn = deleteLicenseFromBtn;
 window.showPaymentOptions = showPaymentOptions;
 window.updateChange = updateChange;
+window.toggleReceiptNote = toggleReceiptNote;
 window.submitSale = submitSale;
 window.submitQuote = submitQuote;
 window.previewSaleInvoice = previewSaleInvoice;
