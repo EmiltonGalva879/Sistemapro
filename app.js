@@ -627,7 +627,6 @@ function saveSaleToCollection(sale, receiptType) {
   const targetCollection = receiptType === 'fiscal' ? 'sales_fiscal' : 'sales_normal';
   const existing = DB.get(targetCollection) || [];
   DB.set(targetCollection, [...existing, sale]);
-  DB.set('sales', [...(DB.get('sales') || []), sale]);
 }
 
 let html5QrCode = null;
@@ -844,7 +843,6 @@ const ITBIS_RATE = 0.18;
 const PAGE_W = 80;
 const MARGIN_X = 8;
 const INNER_W = PAGE_W - MARGIN_X * 2;
-const PAGE_MAX_H = 280;
 const FONT = 'helvetica';
 const LINE_COLOR = [180, 180, 180];
 let pdfY = 8;
@@ -874,50 +872,6 @@ function pdfField(doc, label, value, y) {
   doc.setFont(FONT, 'normal');
   doc.text(String(value), MARGIN_X + INNER_W, y, { align: 'right' });
   return y + 5;
-}
-function pdfCheckPageBreak(doc, y, marginY) {
-  if (y > PAGE_MAX_H) {
-    doc.addPage();
-    return marginY;
-  }
-  return y;
-}
-function pdfDrawReportHeader(doc, reportDate, generatedBy) {
-  const bizName = localStorage.getItem('salesstock_bizname') || 'SALESSTOCK PRO';
-  const bizRnc = localStorage.getItem('salesstock_bizrnc') || '';
-  const bizPhone = localStorage.getItem('salesstock_bizphone') || '';
-  const bizEmail = localStorage.getItem('salesstock_bizemail') || '';
-  const bizAddr = localStorage.getItem('salesstock_bizaddress') || '';
-  let y = MARGIN_X;
-  doc.setFont(FONT, 'bold');
-  doc.setFontSize(15);
-  doc.text(bizName, PAGE_W / 2, y, { align: 'center' });
-  y += 5;
-  doc.setFont(FONT, 'normal');
-  doc.setFontSize(9);
-  if (bizPhone) { doc.text('Tel: ' + bizPhone, PAGE_W / 2, y, { align: 'center' }); y += 4; }
-  if (bizEmail) { doc.text('Email: ' + bizEmail, PAGE_W / 2, y, { align: 'center' }); y += 4; }
-  if (bizAddr) {
-    const lines = doc.splitTextToSize(bizAddr, INNER_W);
-    doc.text(lines, PAGE_W / 2, y, { align: 'center' });
-    y += lines.length * 3.5;
-  }
-  y += 2;
-  pdfLine(doc, MARGIN_X, INNER_W, y);
-  y += 4;
-  y = pdfTitle(doc, 'REPORTE DE VENTAS', y);
-  doc.setFont(FONT, 'normal');
-  doc.setFontSize(9);
-  doc.text('N° ' + reportDate, PAGE_W / 2, y, { align: 'center' });
-  y += 4;
-  if (bizRnc) { doc.text('RNC: ' + bizRnc, PAGE_W / 2, y, { align: 'center' }); y += 4; }
-  doc.text('Fecha: ' + reportDate, PAGE_W / 2, y, { align: 'center' });
-  y += 4;
-  doc.text('Generado por: ' + generatedBy, PAGE_W / 2, y, { align: 'center' });
-  y += 4;
-  pdfLine(doc, MARGIN_X, INNER_W, y);
-  y += 4;
-  return y;
 }
 function pdfCalcInvoiceHeight(sale) {
   const bizName = localStorage.getItem('salesstock_bizname') || '';
@@ -1487,13 +1441,16 @@ function renderActivateLicense() {
         </div>
         ${state.loginError ? '<div style="background:#fee2e2;color:#dc2626;padding:12px;border-radius:8px;margin-bottom:15px;text-align:center;font-weight:600">' + state.loginError + '</div>' : ''}
         <p style="margin-bottom:20px;color:#64748b;text-align:center">Ingrese la clave de licencia de su empresa para activar todas las funciones.</p>
-        <form onsubmit="event.preventDefault();activateLicense(this.lk.value)">
-          <div class="form-group">
-            <label>Clave de Licencia</label>
-            <input class="form-control" name="lk" type="text" placeholder="PRO-2024-XXXX-XXXX" required>
-          </div>
-          <button type="submit" class="btn btn-primary" style="width:100%">Activar Licencia</button>
-        </form>
+         <form onsubmit="event.preventDefault();activateLicense(this.lk.value)">
+           <div class="form-group">
+             <label>Clave de Licencia</label>
+             <input class="form-control" name="lk" type="text" placeholder="PRO-2024-XXXX-XXXX" required>
+           </div>
+           <button type="submit" class="btn btn-primary" style="width:100%">Activar Licencia</button>
+           <div style="margin-top:10px;text-align:center">
+             <button type="button" class="btn btn-secondary" style="font-size:11px;padding:5px 10px" onclick="state.modal={type:'terms'};render()">📄 Términos y Condiciones</button>
+           </div>
+         </form>
         <div style="margin-top:18px;text-align:center">
           <button class="btn btn-secondary" style="width:100%" onclick="logout()">Cerrar Sesión</button>
         </div>
@@ -2969,6 +2926,58 @@ function renderModal() {
           </div>
         </div>
       </div>
+     `;
+  } else if (m.type === 'terms') {
+    html = `
+      <div class="modal-overlay" onclick="state.modal=null;render()">
+        <div class="modal" onclick="event.stopPropagation()" style="max-width:600px;max-height:80vh">
+          <div class="modal-header">
+            <h2 class="modal-title">Términos y Condiciones</h2>
+            <button class="btn btn-secondary" onclick="state.modal=null;render()">✕</button>
+          </div>
+          <div class="modal-body" style="max-height:60vh;overflow-y:auto">
+            <div style="font-size:13px;line-height:1.6;color:#333">
+              <h3 style="color:#2563eb">1. Aceptación de los términos</h3>
+              <p>Al acceder y utilizar SalesStock Pro, usted acepta estar vinculado por estos Términos y Condiciones. Si no está de acuerdo con alguna parte de estos términos, no utilice el servicio.</p>
+              
+              <h3 style="color:#2563eb">2. Descripción del servicio</h3>
+              <p>SalesStock Pro es un sistema de gestión de ventas e inventario que permite administrar productos, realizar ventas, gestionar créditos y generar reportes.</p>
+              
+              <h3 style="color:#2563eb">3. Cuentas de usuario</h3>
+              <p><strong>3.1 Registro:</strong> Debe proporcionar información verdadera y precisa. Es responsable de mantener la confidencialidad de su contraseña.</p>
+              <p><strong>3.2 Licencias:</strong> Cada empresa opera bajo una licencia única. No se permite el uso compartido de licencias. La licencia se vincula a un único usuario administrador.</p>
+              
+              <h3 style="color:#2563eb">4. Uso aceptable</h3>
+              <p><strong>Permitido:</strong> Uso del sistema para gestión comercial legítima, acceso a datos de su propia empresa, generación de reportes.</p>
+              <p><strong>Prohibido:</strong> Acceso no autorizado a datos de otras empresas, modificación de controles de seguridad, distribución de credenciales, uso para actividades ilegales.</p>
+              
+              <h3 style="color:#2563eb">5. Propiedad intelectual</h3>
+              <p>SalesStock Pro, su código fuente, base de datos, diseños y marca son propiedad de su propietario. Queda prohibida la reproducción, distribución o modificación sin autorización por escrito.</p>
+              
+              <h3 style="color:#2563eb">6. Limitación de responsabilidad</h3>
+              <p>El sistema se proporciona "tal cual" sin garantías. No nos hacemos responsables por pérdida de datos, interrupciones del servicio o daños indirectos del uso del sistema.</p>
+              
+              <h3 style="color:#2563eb">7. Terminación</h3>
+              <p>Nos reservamos el derecho de suspender o terminar cuentas que violen estos términos, realicen actividades fraudulentas o no cumplan con los pagos de licencia.</p>
+              
+              <h3 style="color:#2563eb">8. Modificaciones</h3>
+              <p>Estos términos pueden ser actualizados. Se notificará a los usuarios sobre cambios significativos.</p>
+              
+              <h3 style="color:#2563eb">9. Ley aplicable</h3>
+              <p>Estos términos se rigen por las leyes de la jurisdicción del propietario del sistema.</p>
+              
+              <h3 style="color:#2563eb">10. Contacto</h3>
+              <p>Para consultas: legal@salesstock.local</p>
+              
+              <hr style="margin:10px 0;border-color:#e2e8f0">
+              <p style="font-size:11px;color:#64748b">Última actualización: 2026-10-08 | Versión: 1.0</p>
+            </div>
+          </div>
+          <div class="modal-footer" style="text-align:center;padding:10px;border-top:1px solid #e2e8f0">
+            <button class="btn btn-primary" onclick="state.modal=null;render()">Entendido</button>
+          </div>
+        </div>
+      </div>
     `;
   }
   return html;
@@ -2986,30 +2995,49 @@ function exportPDF(dateStr) {
   const subtotal = sales.reduce((s, s2) => s + (s2.subtotal || 0), 0);
   const itbis = sales.reduce((s, s2) => s + (s2.itbis || 0), 0);
   const itemCount = sales.reduce((s, s2) => s + s2.items.reduce((ss, i) => ss + i.quantity, 0), 0);
-  const doc = new jsPDF({ unit: 'mm', format: 'a4' });
-  const today = new Date();
-  const reportDate = dateStr ? new Date(dateStr).toLocaleDateString('es-ES') : today.toLocaleDateString('es-ES');
+  const doc = new jsPDF({ unit: 'mm', format: [PAGE_W, pdfCalcReportHeight(sales)] });
+  let y = MARGIN_X;
+  const bizName = localStorage.getItem('salesstock_bizname') || 'SALESSTOCK PRO';
+  const bizRnc = localStorage.getItem('salesstock_bizrnc') || '';
+  const bizPhone = localStorage.getItem('salesstock_bizphone') || '';
+  const bizEmail = localStorage.getItem('salesstock_bizemail') || '';
+  const bizAddr = localStorage.getItem('salesstock_bizaddress') || '';
+  const reportDate = dateStr ? new Date(dateStr).toLocaleDateString('es-ES') : new Date().toLocaleDateString('es-ES');
   const generatedBy = state.user ? state.user.username : 'Sistema';
-  const colTime = MARGIN_X + 3;
-  const colDesc = MARGIN_X + 14;
-  const colTotal = MARGIN_X + INNER_W;
-  const pageBottom = 270;
-  const drawPageHeader = () => {
-    let yy = pdfDrawReportHeader(doc, reportDate, generatedBy);
-    return drawColumnHeaders(yy);
-  };
-  const drawColumnHeaders = (yy) => {
-    doc.setFont(FONT, 'bold');
-    doc.setFontSize(8);
-    doc.text('HORA', colTime, yy, { align: 'left' });
-    doc.text('CLIENTE / PRODUCTOS', colDesc, yy, { align: 'left' });
-    doc.text('TOTAL', colTotal, yy, { align: 'right' });
-    yy += 2;
-    pdfLine(doc, MARGIN_X, INNER_W, yy);
-    yy += 3;
-    return yy;
-  };
-  let y = pdfDrawReportHeader(doc, reportDate, generatedBy);
+
+  doc.setFont(FONT, 'bold');
+  doc.setFontSize(15);
+  doc.text(bizName, PAGE_W / 2, y, { align: 'center' });
+  y += 5;
+  doc.setFont(FONT, 'normal');
+  doc.setFontSize(9);
+  if (bizPhone) { doc.text('Tel: ' + bizPhone, PAGE_W / 2, y, { align: 'center' }); y += 4; }
+  if (bizEmail) { doc.text('Email: ' + bizEmail, PAGE_W / 2, y, { align: 'center' }); y += 4; }
+  if (bizAddr) {
+    const lines = doc.splitTextToSize(bizAddr, INNER_W);
+    doc.text(lines, PAGE_W / 2, y, { align: 'center' });
+    y += lines.length * 3.5;
+  }
+  y += 2;
+  pdfLine(doc, MARGIN_X, INNER_W, y);
+  y += 4;
+
+  y = pdfTitle(doc, 'REPORTE DE VENTAS', y);
+  doc.setFont(FONT, 'normal');
+  doc.setFontSize(9);
+  doc.text('N° ' + reportDate, PAGE_W / 2, y, { align: 'center' });
+  y += 4;
+  if (bizRnc) {
+    doc.text('RNC: ' + bizRnc, PAGE_W / 2, y, { align: 'center' });
+    y += 4;
+  }
+  doc.text('Fecha: ' + reportDate, PAGE_W / 2, y, { align: 'center' });
+  y += 4;
+  doc.text('Generado por: ' + generatedBy, PAGE_W / 2, y, { align: 'center' });
+  y += 4;
+  pdfLine(doc, MARGIN_X, INNER_W, y);
+  y += 4;
+
   doc.setFont(FONT, 'bold');
   doc.setFontSize(9);
   doc.text('RESUMEN', MARGIN_X, y, { align: 'left' });
@@ -3022,7 +3050,19 @@ function exportPDF(dateStr) {
   y += 1;
   pdfLine(doc, MARGIN_X, INNER_W, y);
   y += 4;
-  y = drawColumnHeaders(y);
+
+  doc.setFont(FONT, 'bold');
+  doc.setFontSize(8);
+  const colTime = MARGIN_X + 3;
+  const colDesc = MARGIN_X + 14;
+  const colTotal = MARGIN_X + INNER_W;
+  doc.text('HORA', colTime, y, { align: 'left' });
+  doc.text('CLIENTE / PRODUCTOS', colDesc, y, { align: 'left' });
+  doc.text('TOTAL', colTotal, y, { align: 'right' });
+  y += 2;
+  pdfLine(doc, MARGIN_X, INNER_W, y);
+  y += 3;
+
   doc.setFont(FONT, 'normal');
   doc.setFontSize(7);
   if (sales.length === 0) {
@@ -3035,12 +3075,6 @@ function exportPDF(dateStr) {
       const time = new Date(s.created).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
       const cliente = s.customerName || ('#' + s.id);
       const prods = s.items.map(i => i.name + ' (' + i.quantity + ')').join(', ');
-      const prodLines = doc.splitTextToSize(prods, INNER_W - 24);
-      const entryHeight = 3 + prodLines.length * 2.5 + 1 + 2;
-      if (y + entryHeight > pageBottom) {
-        doc.addPage();
-        y = drawPageHeader();
-      }
       doc.text(time, colTime, y, { align: 'left' });
       doc.text(fmtMoneyInvoice(s.total), colTotal, y, { align: 'right' });
       doc.setFont(FONT, 'bold');
@@ -3048,18 +3082,16 @@ function exportPDF(dateStr) {
       doc.text(abbreviateText(doc, cliente, colDesc - colTime), colDesc, y, { align: 'left' });
       doc.setFont(FONT, 'normal');
       doc.setFontSize(6);
-      doc.text(prodLines, colDesc, y + 3, { align: 'left' });
-      y += 3 + prodLines.length * 2.5;
+      const lines = doc.splitTextToSize(prods, INNER_W - 24);
+      doc.text(lines, colDesc, y + 3, { align: 'left' });
+      y += 3 + lines.length * 2.5;
       y += 1;
       pdfLine(doc, MARGIN_X, INNER_W, y);
       y += 2;
     });
   }
   y += 2;
-  if (y + 25 > pageBottom) {
-    doc.addPage();
-    y = MARGIN_X;
-  }
+
   doc.setFont(FONT, 'normal');
   doc.setFontSize(10);
   doc.text('Subtotal:', MARGIN_X, y, { align: 'left' });
@@ -3075,6 +3107,7 @@ function exportPDF(dateStr) {
   y += 5;
   pdfLine(doc, MARGIN_X, INNER_W, y);
   y += 4;
+
   doc.setFont(FONT, 'normal');
   doc.setFontSize(7);
   doc.text('*** Gracias por su preferencia ***', PAGE_W / 2, y, { align: 'center' });
