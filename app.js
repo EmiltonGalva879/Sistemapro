@@ -29,8 +29,9 @@ let state = {
   loginTab: 'login',
   loading: true,
   previewInvoicePdfUrl: '',
-  salesListHtml: '',
-  registerLicenseOk: false
+   salesListHtml: '',
+  registerLicenseOk: false,
+  reportDate: new Date().toISOString().split('T')[0],
 };
 
 async function login(username, password) {
@@ -393,6 +394,13 @@ function getVisibleSales() {
 function getTodaySales() {
   const today = new Date().toISOString().split('T')[0];
   return getVisibleSales().filter(s => s.created.startsWith(today));
+}
+
+function getSalesByDate(dateStr) {
+  if (!dateStr) return getTodaySales();
+  const today = new Date().toISOString().split('T')[0];
+  if (dateStr === today) return getTodaySales();
+  return getVisibleSales().filter(s => s.created.startsWith(dateStr));
 }
 
 function verifyPassword(pw) {
@@ -836,6 +844,7 @@ const ITBIS_RATE = 0.18;
 const PAGE_W = 80;
 const MARGIN_X = 8;
 const INNER_W = PAGE_W - MARGIN_X * 2;
+const PAGE_MAX_H = 280;
 const FONT = 'helvetica';
 const LINE_COLOR = [180, 180, 180];
 let pdfY = 8;
@@ -863,8 +872,52 @@ function pdfField(doc, label, value, y) {
   doc.setFontSize(9);
   doc.text(label, MARGIN_X, y, { align: 'left' });
   doc.setFont(FONT, 'normal');
-  doc.text(value, MARGIN_X + INNER_W * 0.35, y, { align: 'left' });
+  doc.text(String(value), MARGIN_X + INNER_W, y, { align: 'right' });
   return y + 5;
+}
+function pdfCheckPageBreak(doc, y, marginY) {
+  if (y > PAGE_MAX_H) {
+    doc.addPage();
+    return marginY;
+  }
+  return y;
+}
+function pdfDrawReportHeader(doc, reportDate, generatedBy) {
+  const bizName = localStorage.getItem('salesstock_bizname') || 'SALESSTOCK PRO';
+  const bizRnc = localStorage.getItem('salesstock_bizrnc') || '';
+  const bizPhone = localStorage.getItem('salesstock_bizphone') || '';
+  const bizEmail = localStorage.getItem('salesstock_bizemail') || '';
+  const bizAddr = localStorage.getItem('salesstock_bizaddress') || '';
+  let y = MARGIN_X;
+  doc.setFont(FONT, 'bold');
+  doc.setFontSize(15);
+  doc.text(bizName, PAGE_W / 2, y, { align: 'center' });
+  y += 5;
+  doc.setFont(FONT, 'normal');
+  doc.setFontSize(9);
+  if (bizPhone) { doc.text('Tel: ' + bizPhone, PAGE_W / 2, y, { align: 'center' }); y += 4; }
+  if (bizEmail) { doc.text('Email: ' + bizEmail, PAGE_W / 2, y, { align: 'center' }); y += 4; }
+  if (bizAddr) {
+    const lines = doc.splitTextToSize(bizAddr, INNER_W);
+    doc.text(lines, PAGE_W / 2, y, { align: 'center' });
+    y += lines.length * 3.5;
+  }
+  y += 2;
+  pdfLine(doc, MARGIN_X, INNER_W, y);
+  y += 4;
+  y = pdfTitle(doc, 'REPORTE DE VENTAS', y);
+  doc.setFont(FONT, 'normal');
+  doc.setFontSize(9);
+  doc.text('N° ' + reportDate, PAGE_W / 2, y, { align: 'center' });
+  y += 4;
+  if (bizRnc) { doc.text('RNC: ' + bizRnc, PAGE_W / 2, y, { align: 'center' }); y += 4; }
+  doc.text('Fecha: ' + reportDate, PAGE_W / 2, y, { align: 'center' });
+  y += 4;
+  doc.text('Generado por: ' + generatedBy, PAGE_W / 2, y, { align: 'center' });
+  y += 4;
+  pdfLine(doc, MARGIN_X, INNER_W, y);
+  y += 4;
+  return y;
 }
 function pdfCalcInvoiceHeight(sale) {
   const bizName = localStorage.getItem('salesstock_bizname') || '';
@@ -893,6 +946,39 @@ function pdfCalcInvoiceHeight(sale) {
     h += 7 + 2;
   });
   h += 4 + 20 + 4;
+  return h;
+}
+
+function pdfCalcReportHeight(sales) {
+  let h = 10;
+  const bizName = localStorage.getItem('salesstock_bizname') || '';
+  const bizPhone = localStorage.getItem('salesstock_bizphone') || '';
+  const bizEmail = localStorage.getItem('salesstock_bizemail') || '';
+  const bizAddr = localStorage.getItem('salesstock_bizaddress') || '';
+  const bizRnc = localStorage.getItem('salesstock_bizrnc') || '';
+  const tmp = new jsPDF({ unit: 'mm', format: [80, 1000] });
+  if (bizName) h += 4;
+  [bizPhone, bizEmail].forEach(v => { if (v) h += 4; });
+  if (bizAddr) {
+    const lines = tmp.splitTextToSize(bizAddr, INNER_W);
+    h += lines.length * 3.5;
+  }
+  h += 4;
+  h += 4;
+  h += 4 + 4 + 4 + 4;
+  if (bizRnc) h += 4;
+  h += 4;
+  h += 4;
+  h += 5 + 2 + 3;
+  h += 4 + 4 * 5 + 1;
+  h += 5;
+  sales.forEach(s => {
+    const prods = s.items.map(i => i.name + ' (' + i.quantity + ')').join(', ');
+    const lines = tmp.splitTextToSize(prods, INNER_W - 10);
+    h += 3 + lines.length * 3;
+  });
+  h += 1 + 4 + 4 + 4 + 4 + 5 + 4;
+  h += 3 + 3;
   return h;
 }
 
@@ -2664,18 +2750,27 @@ function renderUsers() {
 
 function renderReports() {
   const today = new Date().toISOString().split('T')[0];
-  const sales = getTodaySales();
+  const selectedDate = state.reportDate || today;
+  const sales = getSalesByDate(selectedDate);
   const total = sales.reduce((s, s2) => s + s2.total, 0);
+  const displayDate = new Date(selectedDate).toLocaleDateString('es-ES');
   return `
-    <div class="header"><h1>Reportes</h1><button class="btn btn-primary" onclick="exportPDF()">📥 Exportar PDF</button></div>
+    <div class="header"><h1>Reportes</h1><button class="btn btn-primary" onclick="exportPDF('${selectedDate}')">📥 Exportar PDF</button></div>
+    <div class="card" style="margin-bottom:20px">
+      <div class="card-header">
+        <h2 class="card-title">Seleccionar Fecha</h2>
+        <input type="date" id="report-date" class="form-control" style="width:200px;display:inline-block" value="${selectedDate}" onchange="state.reportDate=this.value;render()" />
+        <button class="btn btn-secondary btn-sm" onclick="state.reportDate='${today}';render()" style="margin-left:8px">Hoy</button>
+      </div>
+    </div>
     <div class="stats">
       <div class="stat"><div class="stat-icon blue">🧾</div><div class="stat-info"><h3>Transacciones</h3><div class="stat-value">${sales.length}</div></div></div>
       <div class="stat"><div class="stat-icon green">📦</div><div class="stat-info"><h3>Artículos</h3><div class="stat-value">${sales.reduce((s,s2)=>s+s2.items.reduce((ss,i)=>ss+i.quantity,0),0)}</div></div></div>
       <div class="stat"><div class="stat-icon orange">💰</div><div class="stat-info"><h3>Ingresos</h3>        <div class="stat-value">${fmtMoneyInvoice(total)}</div></div></div>
     </div>
     <div class="card">
-      <div class="card-header"><h2 class="card-title">Detalle - ${new Date(today).toLocaleDateString('es-ES')}</h2></div>
-      ${sales.length ? `<table><thead><tr><th>Cliente / ID</th><th>Hora</th><th>Productos</th><th>Total</th><th></th></tr></thead><tbody>${sales.map(s=>`<tr><td><strong>${s.customerName ? s.customerName : '#'+s.id}</strong></td><td>${new Date(s.created).toLocaleTimeString('es-ES')}</td><td>${s.items.map(i=>i.name).join(', ')}</td><td class="text-success" style="font-weight:600">${fmtMoneyInvoice(s.total)}</td><td><button class="btn btn-danger btn-sm" onclick="promptDeleteSale(${s.id})">🗑️</button></td></tr>`).join('')}</tbody><tfoot><tr style="background:#f8fafc"><td colspan="3" style="text-align:right;font-weight:600">TOTAL:</td><td class="text-success" style="font-weight:700;font-size:16px">${fmtMoneyInvoice(total)}</td><td></td></tr></tfoot></table>` : '<div class="empty">No hay ventas hoy</div>'}
+      <div class="card-header"><h2 class="card-title">Detalle - ${displayDate}</h2></div>
+      ${sales.length ? `<table><thead><tr><th>Cliente / ID</th><th>Hora</th><th>Productos</th><th>Total</th><th></th></tr></thead><tbody>${sales.map(s=>`<tr><td><strong>${s.customerName ? s.customerName : '#'+s.id}</strong></td><td>${new Date(s.created).toLocaleTimeString('es-ES')}</td><td>${s.items.map(i=>i.name).join(', ')}</td><td class="text-success" style="font-weight:600">${fmtMoneyInvoice(s.total)}</td><td><button class="btn btn-danger btn-sm" onclick="promptDeleteSale(${s.id})">🗑️</button></td></tr>`).join('')}</tbody><tfoot><tr style="background:#f8fafc"><td colspan="3" style="text-align:right;font-weight:600">TOTAL:</td><td class="text-success" style="font-weight:700;font-size:16px">${fmtMoneyInvoice(total)}</td><td></td></tr></tfoot></table>` : '<div class="empty">No hay ventas para esta fecha</div>'}
     </div>
   `;
 }
@@ -2885,45 +2980,109 @@ function showBarcode(barcode, name) {
   setTimeout(() => { JsBarcode('#barcode', barcode, { format: 'CODE128', width: 2, height: 80, displayValue: true, fontSize: 14 }); }, 100);
 }
 
-function exportPDF() {
-  const sales = getTodaySales();
+function exportPDF(dateStr) {
+  const sales = getSalesByDate(dateStr);
   const total = sales.reduce((s, s2) => s + s2.total, 0);
-  const doc = new jsPDF();
-  doc.setFontSize(20);
-  doc.text(localStorage.getItem('salesstock_bizname') || 'SalesStock Pro', 105, 20, { align: 'center' });
-  doc.setFontSize(14);
-  doc.text('Reporte de Ventas Diarias', 105, 32, { align: 'center' });
-  doc.setFontSize(10);
-  doc.text('Fecha: ' + new Date().toLocaleDateString('es-ES'), 20, 45);
-  doc.text('Generado por: ' + state.user.username, 20, 52);
-  doc.line(20, 58, 190, 58);
-  doc.setFontSize(12);
-  doc.text('Resumen', 20, 68);
-  doc.setFontSize(10);
-  doc.text('Transacciones: ' + sales.length, 20, 78);
-  doc.text('Ingresos: $' + total.toFixed(2), 20, 85);
-  doc.line(20, 92, 190, 92);
-  doc.setFontSize(12);
-  doc.text('Detalle de Ventas', 20, 102);
-  let y = 115;
+  const subtotal = sales.reduce((s, s2) => s + (s2.subtotal || 0), 0);
+  const itbis = sales.reduce((s, s2) => s + (s2.itbis || 0), 0);
+  const itemCount = sales.reduce((s, s2) => s + s2.items.reduce((ss, i) => ss + i.quantity, 0), 0);
+  const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+  const today = new Date();
+  const reportDate = dateStr ? new Date(dateStr).toLocaleDateString('es-ES') : today.toLocaleDateString('es-ES');
+  const generatedBy = state.user ? state.user.username : 'Sistema';
+  const colTime = MARGIN_X + 3;
+  const colDesc = MARGIN_X + 14;
+  const colTotal = MARGIN_X + INNER_W;
+  const pageBottom = 270;
+  const drawPageHeader = () => {
+    let yy = pdfDrawReportHeader(doc, reportDate, generatedBy);
+    return drawColumnHeaders(yy);
+  };
+  const drawColumnHeaders = (yy) => {
+    doc.setFont(FONT, 'bold');
+    doc.setFontSize(8);
+    doc.text('HORA', colTime, yy, { align: 'left' });
+    doc.text('CLIENTE / PRODUCTOS', colDesc, yy, { align: 'left' });
+    doc.text('TOTAL', colTotal, yy, { align: 'right' });
+    yy += 2;
+    pdfLine(doc, MARGIN_X, INNER_W, yy);
+    yy += 3;
+    return yy;
+  };
+  let y = pdfDrawReportHeader(doc, reportDate, generatedBy);
+  doc.setFont(FONT, 'bold');
   doc.setFontSize(9);
-  doc.text('Cliente / ID', 20, y);
-  doc.text('Hora', 70, y);
-  doc.text('Productos', 100, y);
-  doc.text('Total', 175, y);
-  y += 6;
-  sales.forEach(s => {
-    const prods = s.items.map(i => i.name + '(' + i.quantity + ')').join(', ').substring(0, 40);
-    doc.text(s.customerName || ('#' + s.id), 20, y);
-    doc.text(new Date(s.created).toLocaleTimeString('es-ES'), 70, y);
-    doc.text(prods, 100, y);
-    doc.text('$' + s.total.toFixed(2), 175, y);
-    y += 6;
-  });
-  y += 10;
-  doc.setFontSize(14);
-  doc.text('Total: $' + total.toFixed(2), 105, y, { align: 'center' });
-  doc.save('reporte-' + new Date().toISOString().split('T')[0] + '.pdf');
+  doc.text('RESUMEN', MARGIN_X, y, { align: 'left' });
+  y += 4;
+  doc.setFont(FONT, 'normal');
+  y = pdfField(doc, 'Transacciones:', sales.length, y);
+  y = pdfField(doc, 'Artículos vendidos:', itemCount, y);
+  y = pdfField(doc, 'Ingresos:', fmtMoneyInvoice(total), y);
+  y = pdfField(doc, 'ITBIS (18%):', fmtMoneyInvoice(itbis), y);
+  y += 1;
+  pdfLine(doc, MARGIN_X, INNER_W, y);
+  y += 4;
+  y = drawColumnHeaders(y);
+  doc.setFont(FONT, 'normal');
+  doc.setFontSize(7);
+  if (sales.length === 0) {
+    doc.setFont(FONT, 'italic');
+    doc.setFontSize(8);
+    doc.text('No hay ventas registradas para esta fecha', PAGE_W / 2, y + 5, { align: 'center' });
+    y += 10;
+  } else {
+    sales.forEach(s => {
+      const time = new Date(s.created).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
+      const cliente = s.customerName || ('#' + s.id);
+      const prods = s.items.map(i => i.name + ' (' + i.quantity + ')').join(', ');
+      const prodLines = doc.splitTextToSize(prods, INNER_W - 24);
+      const entryHeight = 3 + prodLines.length * 2.5 + 1 + 2;
+      if (y + entryHeight > pageBottom) {
+        doc.addPage();
+        y = drawPageHeader();
+      }
+      doc.text(time, colTime, y, { align: 'left' });
+      doc.text(fmtMoneyInvoice(s.total), colTotal, y, { align: 'right' });
+      doc.setFont(FONT, 'bold');
+      doc.setFontSize(7);
+      doc.text(abbreviateText(doc, cliente, colDesc - colTime), colDesc, y, { align: 'left' });
+      doc.setFont(FONT, 'normal');
+      doc.setFontSize(6);
+      doc.text(prodLines, colDesc, y + 3, { align: 'left' });
+      y += 3 + prodLines.length * 2.5;
+      y += 1;
+      pdfLine(doc, MARGIN_X, INNER_W, y);
+      y += 2;
+    });
+  }
+  y += 2;
+  if (y + 25 > pageBottom) {
+    doc.addPage();
+    y = MARGIN_X;
+  }
+  doc.setFont(FONT, 'normal');
+  doc.setFontSize(10);
+  doc.text('Subtotal:', MARGIN_X, y, { align: 'left' });
+  doc.text(fmtMoneyInvoice(subtotal), colTotal, y, { align: 'right' });
+  y += 4;
+  doc.text('ITBIS (18%):', MARGIN_X, y, { align: 'left' });
+  doc.text(fmtMoneyInvoice(itbis), colTotal, y, { align: 'right' });
+  y += 4;
+  doc.setFont(FONT, 'bold');
+  doc.setFontSize(12);
+  doc.text('TOTAL:', MARGIN_X, y, { align: 'left' });
+  doc.text(fmtMoneyInvoice(total), colTotal, y, { align: 'right' });
+  y += 5;
+  pdfLine(doc, MARGIN_X, INNER_W, y);
+  y += 4;
+  doc.setFont(FONT, 'normal');
+  doc.setFontSize(7);
+  doc.text('*** Gracias por su preferencia ***', PAGE_W / 2, y, { align: 'center' });
+  y += 3;
+  doc.text('Reporte generado el ' + new Date().toLocaleString('es-ES'), PAGE_W / 2, y, { align: 'center' });
+
+  const todayIso = new Date().toISOString().split('T')[0];
+  doc.save('reporte-' + (dateStr || todayIso) + '.pdf');
 }
 
 function printBarcodeLabels() {
