@@ -417,3 +417,76 @@ tr:hover { background: #f8fafc; }
 .login-tab:hover:not(.active) {
   color: #1e293b;
 }
+/* ===== Protección contra textos largos (global) ===== */
+
+/* Clave: sin esto, un hijo de flex no se encoge y el contenido ancho
+   empuja toda la página hacia los lados */
+.main { min-width: 0; }
+
+/* Las celdas cortan palabras largas en vez de estirar la tabla */
+th, td {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+/* Las tablas dentro de una tarjeta tienen scroll horizontal si no caben */
+.card { overflow-x: auto; }
+
+/* Montos, fechas y botones nunca se parten */
+.col-monto,
+.col-acciones,
+td .btn,
+td .flex { white-space: nowrap; }
+td .flex { flex-wrap: nowrap; }
+
+/* Tabla de créditos: anchos estables (reemplaza el CSS que te pasé antes) */
+.tabla-creditos { table-layout: fixed; }
+.tabla-creditos td { vertical-align: middle; }
+.tabla-creditos .acciones-fila {
+  display: flex;
+  gap: 6px;
+  flex-wrap: nowrap;
+  align-items: center;
+}
+
+/* Otros lugares donde un nombre largo podía deformar el diseño */
+.user-details { min-width: 0; }
+.user-name { overflow-wrap: anywhere; }
+.cart-item-info,
+.alert-content { min-width: 0; overflow-wrap: anywhere; }
+/* ===== Estado del sistema ===== */
+.empresa-status {
+  margin-top: 24px;
+  padding: 14px 16px;
+  border-radius: 10px;
+  border: 1px solid;
+}
+.empresa-status.warn { background: #fffbeb; border-color: #fde68a; }
+.empresa-status.ok   { background: #f0fdf4; border-color: #bbf7d0; }
+.empresa-status-title { font-weight: 700; font-size: 14px; color: var(--text); }
+.empresa-status.warn .empresa-status-title span { color: #b45309; }
+.empresa-status.ok .empresa-status-title span { color: #059669; }
+.empresa-status p { margin-top: 4px; font-size: 13px; color: var(--text-sec); }
+
+.empresa-chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.empresa-chip {
+  background: #fee2e2; color: #b91c1c;
+  border: 1px solid #fecaca;
+  padding: 4px 12px; border-radius: 999px;
+  font-size: 12px; font-weight: 600;
+}
+.empresa-dirty { margin-top: 10px; font-size: 12px; font-weight: 600; color: #2563eb; }
+
+#empresa-save.pulse { box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.18); }
+.empresa-footer { justify-content: flex-end; }
+.empresa-form { padding: 24px; }
+.empresa-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px 24px; }
+.empresa-field.full { grid-column: 1 / -1; }
+.empresa-field label { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+.empresa-ico { width: 26px; height: 26px; border-radius: 8px; background: #eff6ff; display: inline-flex; align-items: center; justify-content: center; font-size: 14px; }
+.empresa-field small { display: block; margin-top: 5px; font-size: 12px; color: var(--text-sec); }
+.empresa-footer { display: flex; align-items: center; gap: 16px; margin-top: 20px; padding-top: 18px; border-top: 1px solid #e2e8f0; }
+.tabla-usuarios { table-layout: fixed; min-width: 720px; }
+.tabla-usuarios td { vertical-align: middle; overflow-wrap: anywhere; }
+.tabla-usuarios .acciones-fila { display: flex; gap: 6px; flex-wrap: nowrap; }
+@media (max-width: 768px) { .empresa-grid { grid-template-columns: 1fr; } }

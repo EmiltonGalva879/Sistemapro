@@ -1,4 +1,4 @@
-const firebaseConfig = (typeof window !== 'undefined' && window.__FIREBASE_CONFIG__) || {
+﻿const firebaseConfig = (typeof window !== 'undefined' && window.__FIREBASE_CONFIG__) || {
   apiKey: "AIzaSyAjsNdKlF3asaARhSgdpPKF0QnjPVbeNUY",
   authDomain: "salesstock-pro-652c4.firebaseapp.com",
   projectId: "salesstock-pro-652c4",
@@ -15,6 +15,11 @@ try {
   window.FB_DB = firebase.firestore();
 
   window.FB_AUTH.setPersistence(firebase.auth.Auth.Persistence.LOCAL);
+  try {
+    window.FB_DB.enablePersistence({ synchronizeTabs: true }).catch((err) => {
+      console.warn('[Firestore] enablePersistence:', err.code || err);
+    });
+  } catch (e) { console.warn('[Firestore] persistence init:', e); }
 
   if (typeof firebase.appCheck === 'function') {
     const _recaptchaKey = (typeof window !== 'undefined' && window.__RECAPTCHA_SITE_KEY__) || '';

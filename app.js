@@ -1,12 +1,101 @@
 const { jsPDF } = window.jspdf;
+// ===== DIÁLOGOS CON EL ESTILO DEL SISTEMA =====
+function showDialog({ title, message, icon, confirmText, cancelText, danger, showCancel }) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.style.padding = '16px';
+    overlay.style.zIndex = '1500';
 
+    overlay.innerHTML = `
+      <div class="modal" style="max-width:420px">
+        <div class="modal-header">
+          <h2 class="modal-title">${icon || ''} ${escapeHtml(title || 'Aviso')}</h2>
+          <button type="button" class="btn btn-secondary" data-action="cancel">✕</button>
+        </div>
+        <div class="modal-body">
+          <p data-role="msg" style="white-space:pre-line;overflow-wrap:anywhere;font-size:15px;line-height:1.5"></p>
+        </div>
+        <div class="modal-footer">
+          ${showCancel ? `<button type="button" class="btn btn-secondary" data-action="cancel">${escapeHtml(cancelText || 'Cancelar')}</button>` : ''}
+          <button type="button" class="btn ${danger ? 'btn-danger' : 'btn-primary'}" data-action="ok">${escapeHtml(confirmText || 'Aceptar')}</button>
+        </div>
+      </div>
+    `;
+    // textContent evita que un nombre con < o & rompa el mensaje
+    overlay.querySelector('[data-role="msg"]').textContent = String(message ?? '');
+
+    document.body.appendChild(overlay);
+
+    let done = false;
+    function finish(value) {
+      if (done) return;
+      done = true;
+      document.removeEventListener('keydown', onKey, true);
+      overlay.remove();
+      resolve(value);
+    }
+    function onKey(e) {
+      if (e.key === 'Escape') { e.stopPropagation(); finish(false); }
+      else if (e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); finish(true); }
+    }
+
+    overlay.querySelectorAll('[data-action="cancel"]').forEach(b => b.addEventListener('click', () => finish(false)));
+    overlay.querySelector('[data-action="ok"]').addEventListener('click', () => finish(true));
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) finish(false); });
+    document.addEventListener('keydown', onKey, true);
+    overlay.querySelector('[data-action="ok"]').focus();
+  });
+}
+
+function showConfirm(message, opts = {}) {
+  return showDialog({
+    title: 'Confirmar',
+    icon: '❓',
+    confirmText: 'Aceptar',
+    cancelText: 'Cancelar',
+    showCancel: true,
+    ...opts
+  });
+}
+
+// alert() ahora usa el mismo diseño. Los mensajes se muestran uno tras otro.
+let _alertChain = Promise.resolve();
+window.alert = function (msg) {
+  const text = String(msg ?? '');
+  const isError = /error|incorrect|inválid|invalid|no encontrad|no se pudo|no autorizad|denegad|sin stock|obligatori|no coinciden|ya fue|ya está|falta|requerid/i.test(text);
+  _alertChain = _alertChain.then(() => showDialog({
+    title: isError ? 'Atención' : 'Listo',
+    icon: isError ? '⚠️' : '✅',
+    message: text,
+    danger: isError,
+    showCancel: false
+  }));
+};
 window.addEventListener('error', function(e) {
   const app = document.getElementById('app');
   if (app) {
     app.innerHTML = '<div style="padding:40px;font-family:monospace;color:#dc2626;white-space:pre-wrap">Error: ' + (e.message || e.error) + '\n' + (e.filename || '') + ':' + (e.lineno || '') + '</div>';
   }
 });
+console.log('Elemento que recibe el clic:',
+  document.elementFromPoint(
+    window.innerWidth / 2,
+    window.innerHeight / 2
+  )
+);
 
+console.log('Capas superpuestas:', 
+  [...document.querySelectorAll('body *')].filter(el => {
+    const s = getComputedStyle(el);
+    const r = el.getBoundingClientRect();
+
+    return s.position === 'fixed' &&
+      s.pointerEvents !== 'none' &&
+      r.width >= window.innerWidth * 0.8 &&
+      r.height >= window.innerHeight * 0.8;
+  })
+);
 document.addEventListener('click', function(e) {
   const input = document.getElementById('scanner-input');
   const dropdown = document.getElementById('scanner-dropdown');
@@ -31,13 +120,13 @@ let state = {
   previewInvoicePdfUrl: '',
    salesListHtml: '',
   registerLicenseOk: false,
-  reportDate: new Date().toISOString().split('T')[0],
+  reportDate: localDateStr(new Date()),
 };
 
 async function login(username, password) {
   try {
     state.loginError = '';
-    await window.App.Services.DB.init();
+    await ensureDB();
     
     if (username === 'Sistemapro' && password === 'Sistemapro1532') {
       state.user = {
@@ -392,16 +481,22 @@ function getVisibleSales() {
   });
 }
 function getTodaySales() {
-  const today = new Date().toISOString().split('T')[0];
-  return getVisibleSales().filter(s => s.created.startsWith(today));
+  const today = localDateStr(new Date());
+  return getVisibleSales().filter(s => localDateStr(s.created) === today);
 }
 
 function getSalesByDate(dateStr) {
   if (!dateStr) return getTodaySales();
-  const today = new Date().toISOString().split('T')[0];
-  if (dateStr === today) return getTodaySales();
-  return getVisibleSales().filter(s => s.created.startsWith(dateStr));
+  return getVisibleSales()
+    .filter(s => localDateStr(s.created) === dateStr)
+    .sort((a, b) => new Date(a.created) - new Date(b.created));
 }
+// Fecha local YYYY-MM-DD (toISOString usa UTC y adelanta el día por la noche)
+function localDateStr(d) {
+  const x = new Date(d);
+  return x.getFullYear() + '-' + String(x.getMonth() + 1).padStart(2, '0') + '-' + String(x.getDate()).padStart(2, '0');
+}
+function fmtDateStr(s) { return s.split('-').reverse().join('/'); }
 
 function verifyPassword(pw) {
   if (!pw) return false;
@@ -410,10 +505,98 @@ function verifyPassword(pw) {
   return false;
 }
 
-function promptDeleteSale(id) {
-  const pw = prompt('Ingrese password de administrador:');
-  if (!verifyPassword(pw)) { alert('Password incorrecta'); return; }
+
+async function promptDeleteSale(id) {
+  const pw = await requestAdminPassword();
+
+  // Si el administrador cancela, no se elimina nada.
+  if (pw === null) return;
+
+  if (!verifyPassword(pw)) {
+    alert('Password incorrecta');
+    return;
+  }
+
   deleteSale(id);
+}
+
+
+function requestAdminPassword() {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-overlay';
+    overlay.style.padding = '16px';
+    overlay.style.zIndex = '1300';
+
+    overlay.innerHTML = `
+      <div class="modal" style="max-width:400px">
+        <div class="modal-header">
+          <h2 class="modal-title">🔒 Autorización requerida</h2>
+          <button type="button" class="btn btn-secondary" data-action="cancel">✕</button>
+        </div>
+        <form id="admin-auth-form" autocomplete="off">
+          <div class="modal-body">
+            <p style="color:#64748b;font-size:14px;margin-bottom:16px">
+              Esta acción necesita la contraseña de administrador.
+            </p>
+            <div class="form-group" style="margin-bottom:12px">
+              <label for="admin-password-input">Contraseña</label>
+              <div style="display:flex;gap:8px">
+                <input id="admin-password-input" class="form-control" type="password"
+                  autocomplete="current-password" placeholder="••••••••" required
+                  style="font-size:16px">
+                <button type="button" class="btn btn-secondary" data-action="toggle"
+                  title="Mostrar u ocultar contraseña">👁️</button>
+              </div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" data-action="cancel">Cancelar</button>
+            <button type="submit" class="btn btn-danger">Confirmar</button>
+          </div>
+        </form>
+      </div>
+    `;
+
+    document.body.appendChild(overlay);
+
+    const form = overlay.querySelector('#admin-auth-form');
+    const input = overlay.querySelector('#admin-password-input');
+    let finished = false;
+
+    function finish(value) {
+      if (finished) return;
+      finished = true;
+      document.removeEventListener('keydown', onKeyDown);
+      overlay.remove();
+      resolve(value);
+    }
+
+    function onKeyDown(event) {
+      if (event.key === 'Escape') finish(null);
+    }
+
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      finish(input.value);
+    });
+
+    overlay.querySelectorAll('[data-action="cancel"]').forEach(btn => {
+      btn.addEventListener('click', () => finish(null));
+    });
+
+    overlay.querySelector('[data-action="toggle"]').addEventListener('click', () => {
+      input.type = input.type === 'password' ? 'text' : 'password';
+      input.focus();
+    });
+
+    overlay.addEventListener('click', (event) => {
+      if (event.target === overlay) finish(null);
+    });
+
+    document.addEventListener('keydown', onKeyDown);
+    input.focus();
+  });
 }
 
 function deleteSale(id) {
@@ -532,7 +715,7 @@ function promptHiddenDiscount(id) {
   if (!item) return;
   const raw = item.price * item.quantity;
   const current = item.hiddenDiscountPct || 0;
-  const input = prompt('Ingrese descuento oculto para ' + item.name + ' (%) o valor fijo:\nEj: 10% o 5\nActual: ' + (current ? (current < 1 ? Math.round(current * 100) + '%' : '$' + current) : 'sin descuento'));
+  const input = prompt('Ingrese descuento para ' + item.name + '\nActual: ' + (current ? (current < 1 ? Math.round(current * 100) + '%' : '$' + current) : 'sin descuento'));
   if (input === null) return;
   const num = parseFloat(input.replace('%', ''));
   if (isNaN(num) || num < 0) {
@@ -630,66 +813,79 @@ function saveSaleToCollection(sale, receiptType) {
 }
 
 let html5QrCode = null;
+let cameraStarting = null;   // promesa mientras la cámara arranca
+let cameraSession = 0;       // identifica cada apertura de cámara
 
 function startCameraScan() {
+  const session = ++cameraSession;
   state.modal = { type: 'camera' };
   render();
-  setTimeout(() => {
+
+  setTimeout(async () => {
+    // Si ya la cerraron antes de arrancar, no hacemos nada
+    if (session !== cameraSession || !document.getElementById('camera-reader')) return;
+
     try {
-      html5QrCode = new Html5Qrcode("camera-reader");
+      html5QrCode = new Html5Qrcode('camera-reader');
       const config = {
         fps: 15,
         qrbox: { width: 280, height: 280 },
-        formats: Html5QrcodeSupportedFormats ? [
+        formatsToSupport: [
           Html5QrcodeSupportedFormats.EAN_13,
           Html5QrcodeSupportedFormats.EAN_8,
           Html5QrcodeSupportedFormats.CODE_128,
           Html5QrcodeSupportedFormats.CODE_39,
           Html5QrcodeSupportedFormats.QR_CODE
-        ] : []
+        ]
       };
-      html5QrCode.start(
-        { facingMode: "environment" },
-        config,
-        (decodedText, decodedResult) => {
-          if (html5QrCode) {
-            html5QrCode.stop().catch(() => {});
-          }
-          state.modal = null;
+      const onScan = (decodedText) => {
+        if (session !== cameraSession) return;
+        stopCameraScan().then(() => {
+          render();
           scanProductBarcode(decodedText);
-        },
-        (errorMessage) => {
-          // Silent - barcode not found in frame, keep scanning
-        }
-      ).catch(() => {
-        // Fallback: try without facingMode constraint
-        html5QrCode.start(
-          {},
-          config,
-          (decodedText, decodedResult) => {
-            if (html5QrCode) {
-              html5QrCode.stop().catch(() => {});
-            }
-            state.modal = null;
-            scanProductBarcode(decodedText);
-          },
-          (errorMessage) => {}
-        );
-      });
+        });
+      };
+
+      const scanner = html5QrCode;
+      cameraStarting = scanner.start({ facingMode: 'environment' }, config, onScan, () => {})
+        .catch(() => scanner.start({}, config, onScan, () => {}));
+
+      await cameraStarting;
     } catch (e) {
-      console.error('[CameraScan] Error starting scanner:', e);
-      alert('Error al iniciar el escáner: ' + e.message);
+      // Si la cerraron mientras arrancaba, el error es normal: se ignora
+      if (session === cameraSession) {
+        console.error('[CameraScan] Error starting scanner:', e);
+        alert('No se pudo iniciar la cámara: ' + (e && e.message ? e.message : e));
+        state.modal = null;
+        render();
+      }
+    } finally {
+      cameraStarting = null;
     }
   }, 100);
 }
 
-function stopCameraScan() {
-  if (html5QrCode) {
-    html5QrCode.stop();
-    html5QrCode = null;
+// Detiene la cámara sin lanzar errores, esté en el estado que esté
+async function stopCameraScan() {
+  cameraSession++;                       // invalida cualquier arranque pendiente
+  const scanner = html5QrCode;
+  html5QrCode = null;
+
+  try {
+    if (cameraStarting) await cameraStarting;   // espera a que termine de arrancar
+  } catch (e) { /* ignorar */ }
+
+  if (scanner) {
+    try {
+      await scanner.stop();
+    } catch (e) { /* no estaba corriendo: ignorar */ }
+    try {
+      scanner.clear();
+    } catch (e) { /* ignorar */ }
   }
   state.modal = null;
 }
+window.stopCameraScan = stopCameraScan;
 
 function makeQuote(customerData) {
   if (state.cart.length === 0) return;
@@ -787,40 +983,10 @@ function testScanner() {
   };
   document.addEventListener('keydown', handler);
 }
-
-function testPrinter() {
-  try {
-    const doc = new jsPDF();
-    doc.setFontSize(16);
-    doc.text(localStorage.getItem('salesstock_bizname') || 'SalesStock Pro', 105, 20, { align: 'center' });
-    doc.setFontSize(12);
-    doc.text('TEST DE IMPRESORA', 105, 35, { align: 'center' });
-    doc.text('Fecha: ' + new Date().toLocaleString('es-ES'), 105, 45, { align: 'center' });
-    doc.text('Si ve esta factura, la impresora está', 105, 60, { align: 'center' });
-    doc.text('correctamente conectada.', 105, 70, { align: 'center' });
-    doc.save('test-impresora.pdf');
-    state.testResult = '<div style="color:#10b981">✅ Impresora lista. Descargando prueba PDF...</div>';
-  } catch (e) {
-    state.testResult = '<div style="color:#ef4444">❌ Error: ' + e.message + '</div>';
-  }
-  render();
-}
-
-function testCashDrawer() {
-  state.testResult = '<div style="color:#f59e0b">⏳ Intentando abrir cajón...</div>';
-  render();
-  openCashDrawer();
-  setTimeout(() => {
-    state.testResult = '<div style="color:#10b981">✅ Señal enviada. Si el cajón no se abrió, verifique la conexión USB del cajón a la impresora.</div>';
-    render();
-  }, 1000);
-}
-
 function getStats() {
   const sales = getVisibleSales();
-  const today = new Date().toISOString().split('T')[0];
-  const todaySales = sales.filter(s => s.created.startsWith(today));
-  const fiados = getVisibleFiados();
+  const today = localDateStr(new Date());
+const todaySales = sales.filter(s => localDateStr(s.created) === today);const fiados = getVisibleFiados();
   const pendingFiados = fiados.filter(f => f.status === 'pending');
   const paidFiados = fiados.filter(f => f.status === 'paid');
   
@@ -1064,8 +1230,15 @@ function generateQuoteInvoice(quote) {
   }
 }
 
-function buildInvoiceDocument(sale) {
-  const doc = new jsPDF({ unit: 'mm', format: [PAGE_W, pdfCalcInvoiceHeight(sale)] });
+function buildInvoiceDocument(sale, pageH) {
+  // Primera pasada: dibuja en una página muy alta para medir el contenido real.
+  // Segunda pasada: crea el PDF con la altura exacta.
+  if (!pageH) {
+    const probe = buildInvoiceDocument(sale, 2000);
+    return buildInvoiceDocument(sale, probe._endY + MARGIN_X);
+  }
+
+  const doc = new jsPDF({ unit: 'mm', format: [PAGE_W, pageH] });
   let y = MARGIN_X;
   const bizName = localStorage.getItem('salesstock_bizname') || 'SALESSTOCK PRO';
   const bizRnc = localStorage.getItem('salesstock_bizrnc') || '';
@@ -1093,7 +1266,7 @@ function buildInvoiceDocument(sale) {
   y = pdfTitle(doc, sale.receiptType === 'fiscal' ? 'COMPROBANTE FISCAL' : 'FACTURA', y);
   doc.setFont(FONT, 'normal');
   doc.setFontSize(9);
-   doc.text('N° ' + sale.id, PAGE_W / 2, y, { align: 'center' });
+  doc.text('N° ' + sale.id, PAGE_W / 2, y, { align: 'center' });
   y += 4;
   if (sale.receiptType === 'fiscal' && bizRnc) {
     doc.text('RNC: ' + bizRnc, PAGE_W / 2, y, { align: 'center' });
@@ -1134,11 +1307,12 @@ function buildInvoiceDocument(sale) {
     y += 4;
   }
 
+  // ===== TABLA DE PRODUCTOS (mismo formato que la cotización) =====
   doc.setFont(FONT, 'bold');
   doc.setFontSize(9);
   const colQty = MARGIN_X;
   const colDescStart = MARGIN_X + 10;
-  const colUnit = MARGIN_X + INNER_W - 26;
+  const colUnit = MARGIN_X + INNER_W - 18;
   const colTotal = MARGIN_X + INNER_W;
   doc.text('CANT', colQty, y, { align: 'left' });
   doc.text('DESCRIPCIÓN', colDescStart, y, { align: 'left' });
@@ -1149,32 +1323,34 @@ function buildInvoiceDocument(sale) {
   y += 3;
 
   doc.setFont(FONT, 'normal');
-  doc.setFontSize(7);
+  doc.setFontSize(8);
   sale.items.forEach(item => {
-    const name = abbreviateText(doc, item.name, INNER_W - 30);
-    const lineH = 6;
-    const pu = fmtMoney(item.price);
-    const tot = fmtMoney(item.subtotal);
-    doc.text(String(item.quantity), colQty, y + 1, { align: 'left' });
-    doc.text(name, colDescStart, y + 1, { align: 'left' });
-    doc.text(pu, colUnit, y + 1, { align: 'right' });
-    doc.text(tot, colTotal, y + 1, { align: 'right' });
-    y += lineH + 1.5;
+    const pu = '$' + Math.round(item.price);
+    const tot = '$' + Math.round(item.subtotal);
+    const lineH = 7;
+    const puWidth = doc.getTextWidth(pu);
+    const nameMaxW = (colUnit - puWidth - 2) - colDescStart;
+    const name = abbreviateText(doc, item.name, nameMaxW);
+    doc.text(String(item.quantity), colQty, y + 1.2, { align: 'left' });
+    doc.text(name, colDescStart, y + 1.2, { align: 'left' });
+    doc.text(pu, colUnit, y + 1.2, { align: 'right' });
+    doc.text(tot, colTotal, y + 1.2, { align: 'right' });
+    y += lineH + 2;
   });
 
   y += 1;
   pdfLine(doc, MARGIN_X, INNER_W, y);
-  y += 4;
+  y += 5;
 
   doc.setFont(FONT, 'normal');
   doc.setFontSize(10);
   doc.text('Subtotal: ' + fmtMoneyInvoice(sale.subtotal), colTotal, y, { align: 'right' });
-  y += 4;
+  y += 5;
   doc.text('ITBIS (18%): ' + fmtMoneyInvoice(sale.itbis), colTotal, y, { align: 'right' });
-  y += 4;
+  y += 5;
   if (sale.paymentType === 'credito') {
     doc.text('Interés (5%): ' + fmtMoneyInvoice(sale.interest), colTotal, y, { align: 'right' });
-    y += 4;
+    y += 5;
   }
   doc.setFont(FONT, 'bold');
   doc.setFontSize(12);
@@ -1197,7 +1373,7 @@ function buildInvoiceDocument(sale) {
     doc.setFont(FONT, 'bold');
     doc.setFontSize(11);
     doc.text(fmtMoneyInvoice(Math.max(0, sale.change || 0)), colTotal, y, { align: 'right' });
-    y += 4;
+    y += 6;
   }
 
   doc.setFont(FONT, 'normal');
@@ -1241,9 +1417,10 @@ function buildInvoiceDocument(sale) {
   doc.setLineWidth(0.4);
   doc.line(MARGIN_X, y, MARGIN_X + INNER_W, y);
 
+  // Guarda hasta dónde llegó el contenido (lo usa la primera pasada)
+  doc._endY = y;
   return doc;
 }
-
 function generateInvoice(sale) {
   const doc = buildInvoiceDocument(sale);
   doc.save('venta-' + sale.id + '.pdf');
@@ -1266,25 +1443,138 @@ function generateInvoice(sale) {
 
 
 function render() {
-  if (state.previewInvoicePdfUrl) {
-    document.getElementById('app').innerHTML = `
-      <div class="invoice-preview-overlay">
-        <div class="invoice-preview-modal">
-          <div class="invoice-preview-header">
-            <h2>Previsualización de Factura</h2>
-            <div>
-              <button class="btn btn-primary" onclick="printPreviewInvoice()" style="margin-right:10px">🖨️ Imprimir</button>
-              <button class="btn btn-secondary" onclick="closeInvoicePreview()">✕ Cerrar</button>
-            </div>
-          </div>
-          <div class="invoice-preview-body">
-            <embed src="${escapeHtml(state.previewInvoicePdfUrl)}" type="application/pdf" style="width:100%;height:calc(100vh - 60px);border:none">
-          </div>
+function showInvoicePreview(doc) {
+  closeInvoicePreview();
+  const url = URL.createObjectURL(doc.output('blob'));
+  state.previewInvoicePdfUrl = url;
+
+  const overlay = document.createElement('div');
+  overlay.id = 'invoice-preview-float';
+  Object.assign(overlay.style, {
+    position: 'fixed',
+    inset: '0',
+    background: 'rgba(0,0,0,0.6)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: '16px',
+    zIndex: '999998'
+  });
+
+  overlay.innerHTML = `
+    <div style="background:#fff;border-radius:12px;width:100%;max-width:440px;height:calc(100vh - 32px);max-height:900px;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 20px 50px rgba(0,0,0,.4)">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 16px;border-bottom:1px solid #e2e8f0">
+        <h2 style="margin:0;font-size:16px;color:#1e293b">Previsualización de Factura</h2>
+        <div style="display:flex;gap:8px">
+          <button class="btn btn-primary btn-sm" onclick="printPreviewInvoice()">🖨️ Imprimir</button>
+          <button class="btn btn-secondary btn-sm" onclick="closeInvoicePreview()">✕ Cerrar</button>
         </div>
       </div>
-    `;
-    return;
+      <div style="flex:1;background:#e2e8f0;padding:12px;box-sizing:border-box;display:flex;justify-content:center">
+        <iframe id="invoice-preview-frame"
+          src="${url}#toolbar=0&navpanes=0&scrollbar=0&view=FitH"
+          style="width:100%;height:100%;border:none;background:#fff;box-shadow:0 4px 20px rgba(0,0,0,.2)"></iframe>
+      </div>
+    </div>
+  `;
+
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) closeInvoicePreview();
+  });
+
+  document.body.appendChild(overlay);
+  document.addEventListener('keydown', onPreviewKey);
+}
+
+function onPreviewKey(e) {
+  if (e.key === 'Escape') closeInvoicePreview();
+}
+
+function closeInvoicePreview() {
+  document.removeEventListener('keydown', onPreviewKey);
+  const overlay = document.getElementById('invoice-preview-float');
+  if (overlay) overlay.remove();
+  if (state.previewInvoicePdfUrl) {
+    URL.revokeObjectURL(state.previewInvoicePdfUrl);
+    state.previewInvoicePdfUrl = '';
   }
+}
+
+function printPreviewInvoice() {
+  const frame = document.getElementById('invoice-preview-frame');
+  if (!frame) return;
+  try {
+    frame.contentWindow.focus();
+    frame.contentWindow.print();
+  } catch (e) {
+    // Plan B: si el navegador bloquea la impresión desde la ventana flotante
+    if (state.previewInvoicePdfUrl) window.open(state.previewInvoicePdfUrl, '_blank');
+  }
+}
+
+function previewSaleInvoice(saleId) {
+  try {
+    const sale = getVisibleSales().find(s => s.id === saleId);
+    if (!sale) {
+      alert('Venta no encontrada o no autorizada');
+      return;
+    }
+    showInvoicePreview(buildInvoiceDocument(sale));
+  } catch (e) {
+    alert('Error al cargar la previsualización: ' + e.message);
+    console.error(e);
+  }
+}
+
+function previewFiadoInvoice(fiadoId) {
+  try {
+    const fiado = getFiadoById(fiadoId);
+    if (!fiado) {
+      alert('Credito no encontrado');
+      return;
+    }
+    showInvoicePreview(buildFiadoDocument(fiado));
+  } catch (e) {
+    alert('Error al cargar la previsualización: ' + e.message);
+    console.error(e);
+  }
+}
+// Imprime un PDF directo, sin abrir ventanas ni previsualización
+function printPdfDirect(doc) {
+  const url = URL.createObjectURL(doc.output('blob'));
+  const frame = document.createElement('iframe');
+  Object.assign(frame.style, {
+    position: 'fixed',
+    left: '-10000px',
+    top: '0',
+    width: '400px',
+    height: '600px',
+    border: '0'
+  });
+  frame.src = url;
+
+  const cleanup = () => {
+    setTimeout(() => {
+      frame.remove();
+      URL.revokeObjectURL(url);
+    }, 60000);
+  };
+
+  frame.onload = () => {
+    setTimeout(() => {
+      try {
+        frame.contentWindow.focus();
+        frame.contentWindow.print();
+      } catch (e) {
+        // Plan B: si el navegador bloquea la impresión directa
+        window.open(url, '_blank');
+      }
+      cleanup();
+    }, 400);
+  };
+
+  document.body.appendChild(frame);
+}
 
   const app = document.getElementById('app');
   if (state.loading) {
@@ -1361,7 +1651,13 @@ function renderLowStockAlert(lowStock) {
     </div>
   `;
 }
-
+let dbReadyPromise = null;
+function ensureDB() {
+  if (!dbReadyPromise) {
+    dbReadyPromise = window.App.Services.DB.init().catch(e => { dbReadyPromise = null; throw e; });
+  }
+  return dbReadyPromise;
+}
 function renderLogin() {
   const tabs = `
     <div class="login-tabs">
@@ -1699,8 +1995,7 @@ function renderFiados() {
                 <td class="text-danger" style="font-weight:600">${fmtMoneyInvoice(f.balance || f.total)}</td>
                 <td>
                   <button class="btn btn-warning btn-sm" onclick="showAddPaymentModal(${f.id})" title="Agregar abono">💵 Abono</button>
-                  <button class="btn btn-primary btn-sm" onclick="printFiadoInvoice(${f.id})" title="Imprimir">🖨️</button>
-                  <button class="btn btn-info btn-sm" onclick="previewFiadoInvoice(${f.id})" title="Ver factura">👁️</button>
+                  <button class="btn btn-info btn-sm" onclick="previewFiadoInvoice(${f.id})" title="Ver e imprimir factura">👁️ Ver / Imprimir</button>
                   <button class="btn btn-danger btn-sm" onclick="promptDeleteFiado(${f.id})" title="Eliminar">🗑️</button>
                 </td>
               </tr>
@@ -1730,8 +2025,7 @@ function renderFiados() {
                 <td class="text-success">${fmtMoneyInvoice(f.paid || 0)}</td>
                 <td>${new Date(f.created).toLocaleDateString('es-ES')}</td>
                 <td>
-                  <button class="btn btn-primary btn-sm" onclick="printFiadoInvoice(${f.id})" title="Imprimir">🖨️</button>
-                  <button class="btn btn-info btn-sm" onclick="previewFiadoInvoice(${f.id})" title="Ver factura">👁️</button>
+                  <button class="btn btn-info btn-sm" onclick="previewFiadoInvoice(${f.id})" title="Ver e imprimir factura">👁️ Ver / Imprimir</button>
                   <button class="btn btn-danger btn-sm" onclick="promptDeleteFiado(${f.id})" title="Eliminar">🗑️</button>
                 </td>
               </tr>
@@ -1743,12 +2037,20 @@ function renderFiados() {
   `;
 }
 
-function promptDeleteFiado(id) {
-  const pw = prompt('Ingrese su contraseña para eliminar el credito:');
+
+window.promptDeleteFiado = async function(id) {
+  const pw = await requestAdminPassword();
+
   if (pw === null) return;
-  if (!verifyPassword(pw)) { alert('Contraseña incorrecta'); return; }
+
+  if (!verifyPassword(pw)) {
+    alert('Contraseña incorrecta');
+    return;
+  }
+
   deleteFiado(id);
-}
+};
+
 
 function deleteFiado(id) {
   const fiados = getVisibleFiados();
@@ -1769,26 +2071,156 @@ function deleteFiado(id) {
   render();
 }
 
+
 function showAddPaymentModal(fiadoId) {
   const fiado = getFiadoById(fiadoId);
   if (!fiado) return;
-  const balance = roundPeso(fiado.balance || fiado.total);
-  const amount = prompt('Monto del abono para ' + fiado.customerName + '\nSaldo pendiente: $' + balance);
-  if (amount === null) return;
-  const num = parseFloat(amount);
-  if (isNaN(num) || num <= 0) {
-    alert('Monto inválido');
-    return;
-  }
-  if (num > balance) {
-    alert('El abono no puede ser mayor al saldo pendiente');
-    return;
-  }
-  addPaymentToFiado(fiadoId, num);
-  alert('Abono registrado: ' + fmtMoneyInvoice(num));
-  render();
-}
 
+  const balance = roundPeso(fiado.balance || fiado.total);
+  const paid = roundPeso(fiado.paid || 0);
+
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-overlay';
+  overlay.style.padding = '16px';
+  overlay.style.zIndex = '1200';
+
+  overlay.innerHTML = `
+    <div class="modal" style="max-width:440px">
+      <div class="modal-header">
+        <h2 class="modal-title">💵 Registrar abono</h2>
+        <button type="button" class="btn btn-secondary" data-action="cancel">✕</button>
+      </div>
+      <form id="abono-form" autocomplete="off">
+        <div class="modal-body">
+          <div style="background:#f8fafc;padding:16px;border-radius:8px;margin-bottom:20px">
+            <div style="display:flex;flex-direction:column;gap:6px">
+              <div style="display:flex;justify-content:space-between;gap:12px">
+                <span style="color:#64748b">Cliente</span>
+                <strong style="overflow-wrap:anywhere;text-align:right">${escapeHtml(fiado.customerName || 'Cliente')}</strong>
+              </div>
+              <div style="display:flex;justify-content:space-between">
+                <span style="color:#64748b">Total</span>
+                <span>${fmtMoneyInvoice(fiado.total)}</span>
+              </div>
+              <div style="display:flex;justify-content:space-between">
+                <span style="color:#64748b">Pagado</span>
+                <span class="text-success">${fmtMoneyInvoice(paid)}</span>
+              </div>
+              <div style="display:flex;justify-content:space-between;font-size:18px;font-weight:700;border-top:1px solid #e2e8f0;padding-top:8px;margin-top:4px">
+                <span>Saldo pendiente</span>
+                <span class="text-danger">${fmtMoneyInvoice(balance)}</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="form-group" style="margin-bottom:12px">
+            <label for="abono-input">Monto del abono</label>
+            <div style="display:flex;gap:8px">
+              <input id="abono-input" class="form-control" type="number" min="0.01" max="${balance}" step="0.01" placeholder="0.00" required style="font-size:18px;font-weight:600">
+              <button type="button" class="btn btn-secondary" data-action="full" style="white-space:nowrap">Pagar todo</button>
+            </div>
+          </div>
+
+          <div id="abono-rest" style="display:none;padding:12px;border-radius:8px;text-align:center;font-weight:700;border:1px solid"></div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-action="cancel">Cancelar</button>
+          <button type="submit" class="btn btn-success">Registrar abono</button>
+        </div>
+      </form>
+    </div>
+  `;
+
+  document.body.appendChild(overlay);
+
+  const form = overlay.querySelector('#abono-form');
+  const input = overlay.querySelector('#abono-input');
+  const rest = overlay.querySelector('#abono-rest');
+  let closed = false;
+
+  function closeModal() {
+    if (closed) return;
+    closed = true;
+    document.removeEventListener('keydown', onKey);
+    overlay.remove();
+  }
+
+  function onKey(e) {
+    if (e.key === 'Escape') closeModal();
+  }
+
+  // Muestra cuánto quedaría pendiente mientras escribes
+  function updateRest() {
+    const num = Number(input.value);
+    if (!input.value || !Number.isFinite(num) || num <= 0) {
+      rest.style.display = 'none';
+      return;
+    }
+    rest.style.display = 'block';
+    if (num > balance) {
+      rest.style.background = '#fef2f2';
+      rest.style.borderColor = '#fecaca';
+      rest.style.color = '#991b1b';
+      rest.textContent = 'El abono supera el saldo por ' + fmtMoneyInvoice(num - balance);
+    } else if (num === balance) {
+      rest.style.background = '#f0fdf4';
+      rest.style.borderColor = '#bbf7d0';
+      rest.style.color = '#166534';
+      rest.textContent = '✔ Con este abono el crédito queda pagado';
+    } else {
+      rest.style.background = '#fffbeb';
+      rest.style.borderColor = '#fde68a';
+      rest.style.color = '#92400e';
+      rest.textContent = 'Quedará pendiente: ' + fmtMoneyInvoice(balance - num);
+    }
+  }
+
+  input.addEventListener('input', updateRest);
+
+  overlay.querySelector('[data-action="full"]').addEventListener('click', () => {
+    input.value = balance;
+    updateRest();
+    input.focus();
+  });
+
+  overlay.querySelectorAll('[data-action="cancel"]').forEach(btn => {
+    btn.addEventListener('click', closeModal);
+  });
+
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) closeModal();
+  });
+
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const num = Number(input.value);
+
+    if (!Number.isFinite(num) || num <= 0) {
+      alert('Monto inválido');
+      input.focus();
+      return;
+    }
+    if (num > balance) {
+      alert('El abono no puede ser mayor al saldo pendiente');
+      input.focus();
+      return;
+    }
+
+    closeModal();
+
+    try {
+      addPaymentToFiado(fiadoId, num);
+      alert('Abono registrado: ' + fmtMoneyInvoice(num));
+      render();
+    } catch (error) {
+      console.error('Error al registrar el abono:', error);
+      alert('No se pudo registrar el abono. Verifica los datos e inténtalo nuevamente.');
+    }
+  });
+
+  document.addEventListener('keydown', onKey);
+  input.focus();
+}
 function previewFiadoInvoice(fiadoId) {
   try {
     const fiado = getFiadoById(fiadoId);
@@ -2013,24 +2445,73 @@ function renderPage() {
 
 function renderDashboard() {
   const stats = getStats();
-  const recent = getVisibleSales().slice(-10).reverse();
+  const sales = [...getVisibleSales()].sort((a, b) => new Date(b.created) - new Date(a.created));
   return `
     <div class="header"><h1>Dashboard</h1></div>
     <div class="stats">
       <div class="stat"><div class="stat-icon blue">📦</div><div class="stat-info"><h3>Total Productos</h3><div class="stat-value">${stats.totalProducts}</div></div></div>
-      <div class="stat"><div class="stat-icon green">💰</div><div class="stat-info"><h3>Ventas de Hoy</h3>      <div class="stat-value">${fmtMoneyInvoice(stats.todaySales)}</div></div></div>
+      <div class="stat"><div class="stat-icon green">💰</div><div class="stat-info"><h3>Ventas de Hoy</h3><div class="stat-value">${fmtMoneyInvoice(stats.todaySales)}</div></div></div>
       <div class="stat"><div class="stat-icon purple">👥</div><div class="stat-info"><h3>Total Usuarios</h3><div class="stat-value">${stats.totalUsers}</div></div></div>
     </div>
-    <div class="grid-2">
-      <div class="card">
-        <div class="card-header"><h2 class="card-title">Últimas Ventas</h2><button class="btn btn-secondary btn-sm" onclick="showAllSalesModal()">Ver todas</button></div>
-        ${recent.length ? `<table><thead><tr><th>Cliente / ID</th><th>Fecha</th><th>Total</th><th>Usuario</th><th>Tipo</th><th></th></tr></thead><tbody>${recent.slice(0,5).map(s=>`<tr><td><strong>${s.customerName ? s.customerName : '#'+s.id}</strong></td><td>${fmtDate(s.created)}</td><td class="text-success" style="font-weight:600">${fmtMoneyInvoice(s.total)}</td><td>${s.user}</td><td>${s.receiptType === 'fiscal' ? '<span style="color:#3b82f6;font-weight:600">Fiscal</span>' : '<span style="color:#64748b">Normal</span>'}</td><td><button class="btn btn-info btn-sm" onclick="previewSaleInvoice(${s.id})" title="Ver factura">👁️</button> <button class="btn btn-danger btn-sm" onclick="promptDeleteSale(${s.id})">🗑️</button></td></tr>`).join('')}</tbody></table>` : '<div class="empty">No hay ventas recientes</div>'}
+    <div class="card">
+      <div class="card-header">
+        <h2 class="card-title">Facturas <span style="color:#64748b;font-weight:500;font-size:14px">(${sales.length})</span></h2>
+      </div>
+      <div style="padding:20px">
+        <div style="margin-bottom:16px">
+          <input type="text" class="form-control" id="sales-search" placeholder="Buscar por cliente, usuario o ID..." value="${escapeHtml(state.salesSearch || '')}" oninput="filterSalesTable(this.value)">
+        </div>
+        ${sales.length ? `
+        <div style="overflow-x:auto">
+          <table id="sales-table" class="tabla-dashboard">
+            <colgroup>
+              <col style="width:20%"><col style="width:16%"><col style="width:12%"><col style="width:11%"><col style="width:12%"><col style="width:12%"><col style="width:8%"><col style="width:9%">
+            </colgroup>
+            <thead>
+              <tr><th>Cliente / ID</th><th>Fecha</th><th>Subtotal</th><th>ITBIS</th><th>Total</th><th>Usuario</th><th>Tipo</th><th></th></tr>
+            </thead>
+            <tbody>
+              ${sales.map(s => `
+                <tr>
+                  <td title="${escapeHtml(s.customerName || '#' + s.id)}"><strong>${escapeHtml(s.customerName || '#' + s.id)}</strong></td>
+                  <td class="col-monto">${fmtDate(s.created)}</td>
+                  <td class="col-monto">${fmtMoneyInvoice(s.subtotal || 0)}</td>
+                  <td class="col-monto">${fmtMoneyInvoice(s.itbis || 0)}</td>
+                  <td class="col-monto text-success" style="font-weight:600">${fmtMoneyInvoice(s.total)}</td>
+                  <td>${escapeHtml(s.user || '')}</td>
+                  <td class="col-monto">${s.receiptType === 'fiscal' ? '<span style="color:#3b82f6;font-weight:600">Fiscal</span>' : '<span style="color:#64748b">Normal</span>'}</td>
+                  <td class="col-acciones">
+                    <div class="acciones-fila">
+                      <button class="btn btn-info btn-sm" onclick="previewSaleInvoice(${s.id})" title="Ver factura">👁️</button>
+                      <button class="btn btn-danger btn-sm" onclick="promptDeleteSale(${s.id})" title="Eliminar">🗑️</button>
+                    </div>
+                  </td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+        <div id="sales-empty" class="empty" style="display:none">No se encontraron facturas</div>
+        ` : '<div class="empty">No hay ventas registradas</div>'}
       </div>
     </div>
-    ${state.salesListHtml ? `<div class="sales-list-overlay" onclick="state.salesListHtml='';render()"><div class="sales-list-modal" onclick="event.stopPropagation()"><div class="sales-list-header"><h2>Todas las Facturas</h2><button class="btn btn-secondary" onclick="state.salesListHtml='';render()">✕</button></div><div class="sales-list-body">${state.salesListHtml}</div></div></div>` : ''}
   `;
 }
+function filterSalesTable(query) {
+  state.salesSearch = query;
+  const q = String(query || '').toLowerCase().trim();
+  const rows = document.querySelectorAll('#sales-table tbody tr');
+  let visible = 0;
+  rows.forEach(row => {
+    const show = row.innerText.toLowerCase().includes(q);
+    row.style.display = show ? '' : 'none';
+    if (show) visible++;
+  });
+  const empty = document.getElementById('sales-empty');
+  if (empty) empty.style.display = visible ? 'none' : 'block';
+}
 
+window.filterSalesTable = filterSalesTable;
 function previewSaleInvoice(saleId) {
   try {
     const sale = getVisibleSales().find(s => s.id === saleId);
@@ -2219,6 +2700,17 @@ function renderSaleInvoiceHtml(sale) {
 
 function renderProducts() {
   const products = getProducts();
+  let searchTimer = null;
+function onProductSearch(v) {
+  state.search = v;
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => {
+    render();
+    const i = document.querySelector('.search-input');
+    if (i) { i.focus(); i.setSelectionRange(v.length, v.length); }
+  }, 150);
+}
+window.onProductSearch = onProductSearch;
   return `
     <div class="header"><h1>Productos</h1><button class="btn btn-primary" onclick="state.modal={type:'product'};render()">+ Nuevo Producto</button></div>
     <div class="card" style="background:#1e293b;color:#fff;padding:20px;margin-bottom:20px">
@@ -2233,7 +2725,8 @@ function renderProducts() {
     </div>
     <div class="card">
       <table>
-        <thead><tr><th>Nombre</th><th>Precio</th><th>Stock</th><th>Mín.</th><th>Barcode</th><th>Acciones</th></tr></thead>
+      <input class="search-input" placeholder="Buscar productos..." value="${escapeHtml(state.search)}" oninput="onProductSearch(this.value)">  
+      <thead><tr><th>Nombre</th><th>Precio</th><th>Stock</th><th>Mín.</th><th>Barcode</th><th>Acciones</th></tr></thead>
         <tbody>
           ${products.length ? products.map(p=>`
             <tr class="${p.stock <= p.minStock ? 'low-stock' : ''}">
@@ -2592,126 +3085,143 @@ function deleteLicenseFromBtn(btn) {
   }
 }
 
+const COMPANY_FIELDS = [
+  { id: 'bizname',    key: 'salesstock_bizname',    icon: '📛', label: 'Nombre de la empresa', hint: 'Aparece en facturas, cotizaciones y reportes', ph: 'Nombre de la empresa', def: 'SalesStock Pro', full: true },
+  { id: 'bizrnc',     key: 'salesstock_bizrnc',     icon: '🪪', label: 'RNC / NIT',            hint: 'Necesario para los comprobantes fiscales',     ph: '000-0000000-0' },
+  { id: 'bizphone',   key: 'salesstock_bizphone',   icon: '📞', label: 'Teléfono',             hint: 'Contacto principal',                           ph: '(809) 000-0000' },
+  { id: 'bizemail',   key: 'salesstock_bizemail',   icon: '📧', label: 'Email',                hint: 'Correo electrónico de contacto',               ph: 'contacto@empresa.com' },
+  { id: 'bizaddress', key: 'salesstock_bizaddress', icon: '📍', label: 'Dirección',            hint: 'Dirección física del negocio',                 ph: 'Calle, ciudad, país' }
+];
+
+function companyStatusHtml(values, dirty) {
+  const missing = COMPANY_FIELDS.filter(f => !String(values[f.id] || '').trim());
+  const dirtyHtml = dirty
+    ? '<div class="empresa-dirty">● Tienes cambios sin guardar</div>'
+    : '';
+
+  if (!missing.length) {
+    return `
+      <div class="empresa-status ok">
+        <div class="empresa-status-title">✅ Estado del sistema: <span>Todo configurado</span></div>
+        <p>Los datos de la empresa se imprimen automáticamente en facturas, cotizaciones, reportes y etiquetas.</p>
+        ${dirtyHtml}
+      </div>`;
+  }
+  return `
+    <div class="empresa-status warn">
+      <div class="empresa-status-title">⚠️ Estado del sistema: <span>Faltan ${missing.length} dato(s) por configurar</span></div>
+      <div class="empresa-chips">
+        ${missing.map(f => `<span class="empresa-chip">${f.icon} ${f.label}</span>`).join('')}
+      </div>
+      ${dirtyHtml}
+    </div>`;
+}
+
+// Lee lo que hay escrito en los campos (guardado o no)
+function readCompanyForm() {
+  const v = {};
+  COMPANY_FIELDS.forEach(f => {
+    const el = document.getElementById(f.id);
+    v[f.id] = el ? el.value : '';
+  });
+  return v;
+}
+
+// Se llama cada vez que escribes: actualiza el estado sin redibujar la página
+function updateCompanyStatus() {
+  const box = document.getElementById('empresa-status-box');
+  if (!box) return;
+  const values = readCompanyForm();
+  const dirty = COMPANY_FIELDS.some(f =>
+    String(values[f.id]).trim() !== (localStorage.getItem(f.key) || f.def || '').trim()
+  );
+  box.innerHTML = companyStatusHtml(values, dirty);
+  const btn = document.getElementById('empresa-save');
+  if (btn) btn.classList.toggle('pulse', dirty);
+}
+
+function saveCompanyData() {
+  COMPANY_FIELDS.forEach(f => {
+    const el = document.getElementById(f.id);
+    if (el) localStorage.setItem(f.key, el.value.trim());
+  });
+  alert('Datos de la empresa guardados');
+  render(); // actualiza el logo del menú y el estado
+}
+
 function renderUsers() {
   if (state.user.role !== 'ADMIN') return '<div class="empty">Acceso denegado</div>';
   const users = getVisibleUsers();
+  const saved = {};
+  COMPANY_FIELDS.forEach(f => { saved[f.id] = localStorage.getItem(f.key) || f.def || ''; });
+
   return `
     <div class="header"><h1>Usuarios</h1><button class="btn btn-primary" onclick="state.modal={type:'user'};render()">+ Nuevo</button></div>
-    
-    <!-- DATOS DE LA EMPRESA - TODO EN UN SOLO ESPACIO -->
-    <div class="card" style="margin-bottom:20px">
+
+    <div class="card">
       <div class="card-header"><h2 class="card-title">🏢 Datos de la Empresa</h2></div>
-      <div style="padding:20px">
-        <table style="width:100%">
-          <tr>
-            <td style="padding:15px;border-bottom:1px solid #e2e8f0">
-              <div style="display:flex;align-items:center;gap:15px">
-                <span style="font-size:24px">📛</span>
-                <div style="flex:1">
-                  <strong>Nombre de la Empresa</strong>
-                  <p style="color:#64748b;font-size:12px">Aparece en facturas, cotizaciones y reportes</p>
-                </div>
-                <input type="text" id="bizname" value="${localStorage.getItem('salesstock_bizname') || 'SalesStock Pro'}" style="padding:8px;border:1px solid #e2e8f0;border-radius:4px;width:220px" placeholder="Nombre de la empresa">
-                <button class="btn btn-primary btn-sm" onclick="localStorage.setItem('salesstock_bizname',document.getElementById('bizname').value);render()">Guardar</button>
-              </div>
-            </td>
-          </tr>
-          <tr>
-            <td style="padding:15px;border-bottom:1px solid #e2e8f0">
-              <div style="display:flex;align-items:center;gap:15px">
-                <span style="font-size:24px">🪪</span>
-                <div style="flex:1">
-                  <strong>RNC / NIT</strong>
-                  <p style="color:#64748b;font-size:12px">Registro fiscal de la empresa</p>
-                </div>
-                <input type="text" id="bizrnc" value="${localStorage.getItem('salesstock_bizrnc') || ''}" style="padding:8px;border:1px solid #e2e8f0;border-radius:4px;width:200px" placeholder="000-0000000-0">
-                <button class="btn btn-primary btn-sm" onclick="localStorage.setItem('salesstock_bizrnc',document.getElementById('bizrnc').value);render()">Guardar</button>
-              </div>
-            </td>
-          </tr>
-          <tr>
-            <td style="padding:15px;border-bottom:1px solid #e2e8f0">
-              <div style="display:flex;align-items:center;gap:15px">
-                <span style="font-size:24px">📞</span>
-                <div style="flex:1">
-                  <strong>Teléfono de la Empresa</strong>
-                  <p style="color:#64748b;font-size:12px">Contacto principal</p>
-                </div>
-                <input type="text" id="bizphone" value="${localStorage.getItem('salesstock_bizphone') || ''}" style="padding:8px;border:1px solid #e2e8f0;border-radius:4px;width:200px" placeholder="(809) 000-0000">
-                <button class="btn btn-primary btn-sm" onclick="localStorage.setItem('salesstock_bizphone',document.getElementById('bizphone').value);render()">Guardar</button>
-              </div>
-            </td>
-          </tr>
-          <tr>
-            <td style="padding:15px;border-bottom:1px solid #e2e8f0">
-              <div style="display:flex;align-items:center;gap:15px">
-                <span style="font-size:24px">📧</span>
-                <div style="flex:1">
-                  <strong>Email de la Empresa</strong>
-                  <p style="color:#64748b;font-size:12px">Correo electrónico de contacto</p>
-                </div>
-                <input type="text" id="bizemail" value="${localStorage.getItem('salesstock_bizemail') || ''}" style="padding:8px;border:1px solid #e2e8f0;border-radius:4px;width:240px" placeholder="contacto@empresa.com">
-                <button class="btn btn-primary btn-sm" onclick="localStorage.setItem('salesstock_bizemail',document.getElementById('bizemail').value);render()">Guardar</button>
-              </div>
-            </td>
-          </tr>
-          <tr>
-            <td style="padding:15px;border-bottom:1px solid #e2e8f0">
-              <div style="display:flex;align-items:center;gap:15px">
-                <span style="font-size:24px">📍</span>
-                <div style="flex:1">
-                  <strong>Dirección</strong>
-                  <p style="color:#64748b;font-size:12px">Dirección física del negocio</p>
-                </div>
-                <input type="text" id="bizaddress" value="${localStorage.getItem('salesstock_bizaddress') || ''}" style="padding:8px;border:1px solid #e2e8f0;border-radius:4px;width:300px" placeholder="Calle, ciudad, país">
-                <button class="btn btn-primary btn-sm" onclick="localStorage.setItem('salesstock_bizaddress',document.getElementById('bizaddress').value);render()">Guardar</button>
-              </div>
-            </td>
-          </tr>
-          <tr>
-            <td style="padding:15px">
-              <div style="background:#f8fafc;padding:10px;border-radius:8px">
-                <strong>Estado del sistema:</strong> <span style="color:#10b981">Configurado</span>
-                <p style="color:#64748b;font-size:12px;margin-top:4px">Los datos guardados se imprimen automáticamente en facturas y cotizaciones.</p>
-              </div>
-            </td>
-          </tr>
+      <form class="empresa-form" onsubmit="event.preventDefault();saveCompanyData()" oninput="updateCompanyStatus()" autocomplete="off">
+        <div class="empresa-grid">
+          ${COMPANY_FIELDS.map(f => `
+            <div class="empresa-field ${f.full ? 'full' : ''}">
+              <label for="${f.id}"><span class="empresa-ico">${f.icon}</span>${f.label}</label>
+              <input id="${f.id}" class="form-control" type="text" value="${escapeHtml(saved[f.id])}" placeholder="${f.ph}">
+              <small>${f.hint}</small>
+            </div>
+          `).join('')}
+        </div>
+
+        <div id="empresa-status-box">${companyStatusHtml(saved, false)}</div>
+
+        <div class="empresa-footer">
+          <button id="empresa-save" type="submit" class="btn btn-primary">💾 Guardar cambios</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="card">
+      <div class="card-header"><h2 class="card-title">👥 Usuarios <span style="color:#64748b;font-weight:500;font-size:14px">(${users.length})</span></h2></div>
+      <div style="overflow-x:auto">
+        <table class="tabla-usuarios">
+          <colgroup><col style="width:30%"><col style="width:16%"><col style="width:20%"><col style="width:20%"><col style="width:14%"></colgroup>
+          <thead><tr><th>Usuario</th><th>Rol</th><th>Fecha</th><th>Creado por</th><th>Acciones</th></tr></thead>
+          <tbody>
+            ${users.map(u => `
+              <tr>
+                <td>
+                  <div style="display:flex;align-items:center;gap:10px;min-width:0">
+                    <div class="avatar" style="width:32px;height:32px;font-size:13px;flex-shrink:0">${escapeHtml((u.username || '?')[0].toUpperCase())}</div>
+                    <strong>${escapeHtml(u.username || '')}</strong>
+                  </div>
+                </td>
+                <td><span class="badge ${u.role === 'ADMIN' ? 'badge-warning' : 'badge-info'}">${u.role === 'ADMIN' ? 'Administrador' : 'Usuario'}</span></td>
+                <td class="col-monto">${fmtDate(u.created)}</td>
+                <td>${escapeHtml(getUserCreator(u.id))}</td>
+                <td class="col-acciones">
+                  <div class="acciones-fila">
+                    <button class="btn btn-secondary btn-sm" onclick="state.modal={type:'user',user:${JSON.stringify(u).replace(/"/g, '&quot;')}};render()" title="Editar">✏️</button>
+                    <button class="btn btn-danger btn-sm" onclick="confirmDeleteUser(${u.id})" title="Eliminar">🗑️</button>
+                  </div>
+                </td>
+              </tr>
+            `).join('')}
+          </tbody>
         </table>
       </div>
-    </div>
-    
-    <!-- GESTION DE USUARIOS -->
-    <div class="card">
-      <table>
-        <thead><tr><th>Usuario</th><th>Rol</th><th>Fecha</th><th>Creado por</th><th>Acciones</th></tr></thead>
-        <tbody>
-          ${users.map(u=>`
-            <tr>
-              <td><strong>${u.username}</strong></td>
-              <td><span class="badge ${u.role==='ADMIN'?'badge-warning':'badge-info'}">${u.role==='ADMIN'?'Administrador':'Usuario'}</span></td>
-              <td>${fmtDate(u.created)}</td>
-              <td>${getUserCreator(u.id)}</td>
-              <td>
-                <div class="flex gap-2">
-                  <button class="btn btn-secondary btn-sm" onclick="state.modal={type:'user',user:${JSON.stringify(u).replace(/"/g,'&quot;')}};render()">✏️</button>
-                  <button class="btn btn-danger btn-sm" onclick="if(confirm('¿Eliminar?')){deleteUser(${u.id});render()}">🗑️</button>
-                </div>
-              </td>
-            </tr>
-          `).join('')}
-        </tbody>
-      </table>
     </div>
   `;
 }
 
+window.saveCompanyData = saveCompanyData;
+window.updateCompanyStatus = updateCompanyStatus;
+
 function renderReports() {
-  const today = new Date().toISOString().split('T')[0];
-  const selectedDate = state.reportDate || today;
-  const sales = getSalesByDate(selectedDate);
-  const total = sales.reduce((s, s2) => s + s2.total, 0);
-  const displayDate = new Date(selectedDate).toLocaleDateString('es-ES');
-  return `
+  const today = localDateStr(new Date());
+const selectedDate = state.reportDate || today;
+const sales = getSalesByDate(selectedDate);
+const total = sales.reduce((s, s2) => s + s2.total, 0);
+const displayDate = fmtDateStr(selectedDate);
+return `
     <div class="header"><h1>Reportes</h1><button class="btn btn-primary" onclick="exportPDF('${selectedDate}')">📥 Exportar PDF</button></div>
     <div class="card" style="margin-bottom:20px">
       <div class="card-header">
@@ -2990,134 +3500,233 @@ function showBarcode(barcode, name) {
 }
 
 function exportPDF(dateStr) {
-  const sales = getSalesByDate(dateStr);
-  const total = sales.reduce((s, s2) => s + s2.total, 0);
-  const subtotal = sales.reduce((s, s2) => s + (s2.subtotal || 0), 0);
-  const itbis = sales.reduce((s, s2) => s + (s2.itbis || 0), 0);
-  const itemCount = sales.reduce((s, s2) => s + s2.items.reduce((ss, i) => ss + i.quantity, 0), 0);
-  const doc = new jsPDF({ unit: 'mm', format: [PAGE_W, pdfCalcReportHeight(sales)] });
-  let y = MARGIN_X;
-  const bizName = localStorage.getItem('salesstock_bizname') || 'SALESSTOCK PRO';
+  dateStr = dateStr || localDateStr(new Date());
+  const sales = [...getSalesByDate(dateStr)].sort((a, b) => new Date(a.created) - new Date(b.created));
+
+  const total = sales.reduce((s, x) => s + (x.total || 0), 0);
+  const subtotal = sales.reduce((s, x) => s + (x.subtotal || 0), 0);
+  const itbis = sales.reduce((s, x) => s + (x.itbis || 0), 0);
+  const itemCount = sales.reduce((s, x) => s + x.items.reduce((ss, i) => ss + i.quantity, 0), 0);
+
+  const money = (v) => 'RD$ ' + Number(v || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+  const bizName = (localStorage.getItem('salesstock_bizname') || 'SalesStock Pro').trim();
   const bizRnc = localStorage.getItem('salesstock_bizrnc') || '';
   const bizPhone = localStorage.getItem('salesstock_bizphone') || '';
   const bizEmail = localStorage.getItem('salesstock_bizemail') || '';
   const bizAddr = localStorage.getItem('salesstock_bizaddress') || '';
-  const reportDate = dateStr ? new Date(dateStr).toLocaleDateString('es-ES') : new Date().toLocaleDateString('es-ES');
-  const generatedBy = state.user ? state.user.username : 'Sistema';
+  const logoWord = bizName.split(' ')[0] || 'SalesStock';
+ const reportDate = dateStr ? fmtDateStr(dateStr) : fmtDateStr(localDateStr(new Date()));
+// y al final:
+doc.save('reporte-' + (dateStr || localDateStr(new Date())) + '.pdf');const generatedBy = state.user ? state.user.username : 'Sistema';
+
+  const doc = new jsPDF({ unit: 'mm', format: 'a4' });
+  const PW = 210, PH = 297, M = 12, IW = PW - M * 2;
+  const DARK = [30, 41, 59], BLUE = [37, 99, 235], GREEN = [16, 185, 129], AMBER = [245, 158, 11];
+  const GRAY = [100, 116, 139], BORDER = [226, 232, 240], SOFT = [248, 250, 252], WHITE = [255, 255, 255];
+
+  // ===== Encabezado oscuro =====
+  doc.setFillColor(...DARK);
+  doc.rect(0, 0, PW, 34, 'F');
 
   doc.setFont(FONT, 'bold');
-  doc.setFontSize(15);
-  doc.text(bizName, PAGE_W / 2, y, { align: 'center' });
-  y += 5;
-  doc.setFont(FONT, 'normal');
-  doc.setFontSize(9);
-  if (bizPhone) { doc.text('Tel: ' + bizPhone, PAGE_W / 2, y, { align: 'center' }); y += 4; }
-  if (bizEmail) { doc.text('Email: ' + bizEmail, PAGE_W / 2, y, { align: 'center' }); y += 4; }
-  if (bizAddr) {
-    const lines = doc.splitTextToSize(bizAddr, INNER_W);
-    doc.text(lines, PAGE_W / 2, y, { align: 'center' });
-    y += lines.length * 3.5;
-  }
-  y += 2;
-  pdfLine(doc, MARGIN_X, INNER_W, y);
-  y += 4;
+  doc.setFontSize(22);
+  const w1 = doc.getTextWidth(logoWord);
+  doc.setTextColor(...BLUE);
+  doc.text(logoWord, M, 15);
+  doc.setTextColor(...WHITE);
+  doc.text('Pro', M + w1, 15);
 
-  y = pdfTitle(doc, 'REPORTE DE VENTAS', y);
   doc.setFont(FONT, 'normal');
-  doc.setFontSize(9);
-  doc.text('N° ' + reportDate, PAGE_W / 2, y, { align: 'center' });
-  y += 4;
-  if (bizRnc) {
-    doc.text('RNC: ' + bizRnc, PAGE_W / 2, y, { align: 'center' });
-    y += 4;
-  }
-  doc.text('Fecha: ' + reportDate, PAGE_W / 2, y, { align: 'center' });
-  y += 4;
-  doc.text('Generado por: ' + generatedBy, PAGE_W / 2, y, { align: 'center' });
-  y += 4;
-  pdfLine(doc, MARGIN_X, INNER_W, y);
-  y += 4;
-
-  doc.setFont(FONT, 'bold');
-  doc.setFontSize(9);
-  doc.text('RESUMEN', MARGIN_X, y, { align: 'left' });
-  y += 4;
-  doc.setFont(FONT, 'normal');
-  y = pdfField(doc, 'Transacciones:', sales.length, y);
-  y = pdfField(doc, 'Artículos vendidos:', itemCount, y);
-  y = pdfField(doc, 'Ingresos:', fmtMoneyInvoice(total), y);
-  y = pdfField(doc, 'ITBIS (18%):', fmtMoneyInvoice(itbis), y);
-  y += 1;
-  pdfLine(doc, MARGIN_X, INNER_W, y);
-  y += 4;
-
-  doc.setFont(FONT, 'bold');
   doc.setFontSize(8);
-  const colTime = MARGIN_X + 3;
-  const colDesc = MARGIN_X + 14;
-  const colTotal = MARGIN_X + INNER_W;
-  doc.text('HORA', colTime, y, { align: 'left' });
-  doc.text('CLIENTE / PRODUCTOS', colDesc, y, { align: 'left' });
-  doc.text('TOTAL', colTotal, y, { align: 'right' });
-  y += 2;
-  pdfLine(doc, MARGIN_X, INNER_W, y);
-  y += 3;
+  doc.setTextColor(203, 213, 225);
+  const info = [bizPhone && 'Tel: ' + bizPhone, bizEmail, bizAddr].filter(Boolean).join('   |   ');
+  if (info) doc.text(abbreviateText(doc, info, 110), M, 22);
+  if (bizRnc) doc.text('RNC: ' + bizRnc, M, 27);
 
+  doc.setFont(FONT, 'bold');
+  doc.setFontSize(14);
+  doc.setTextColor(...WHITE);
+  doc.text('REPORTE DE VENTAS', PW - M, 13, { align: 'right' });
   doc.setFont(FONT, 'normal');
-  doc.setFontSize(7);
+  doc.setFontSize(8.5);
+  doc.setTextColor(203, 213, 225);
+  doc.text('Fecha: ' + reportDate, PW - M, 20, { align: 'right' });
+  doc.text('Generado por: ' + generatedBy, PW - M, 25, { align: 'right' });
+  doc.text('Emitido: ' + new Date().toLocaleString('es-ES'), PW - M, 30, { align: 'right' });
+
+  // ===== Tarjetas de resumen =====
+  const cards = [
+    { label: 'TRANSACCIONES', value: String(sales.length), color: BLUE },
+    { label: 'ARTÍCULOS VENDIDOS', value: String(itemCount), color: AMBER },
+    { label: 'ITBIS (18%)', value: money(itbis), color: DARK },
+    { label: 'INGRESOS', value: money(total), color: GREEN }
+  ];
+  const gap = 4;
+  const cw = (IW - gap * 3) / 4;
+  const cy = 42, ch = 20;
+  cards.forEach((c, i) => {
+    const x = M + i * (cw + gap);
+    doc.setFillColor(...SOFT);
+    doc.setDrawColor(...BORDER);
+    doc.setLineWidth(0.3);
+    doc.roundedRect(x, cy, cw, ch, 2.5, 2.5, 'FD');
+    doc.setFillColor(...c.color);
+    doc.roundedRect(x, cy, 1.8, ch, 0.9, 0.9, 'F');
+    doc.setFont(FONT, 'bold');
+    doc.setFontSize(6.5);
+    doc.setTextColor(...GRAY);
+    doc.text(c.label, x + 5, cy + 7);
+    let fs = 13;
+    doc.setFontSize(fs);
+    while (fs > 8 && doc.getTextWidth(c.value) > cw - 8) { fs -= 0.5; doc.setFontSize(fs); }
+    doc.setTextColor(...c.color);
+    doc.text(c.value, x + 5, cy + 15.5);
+  });
+
+  // ===== Tabla =====
+  const colHora = M + 3;
+  const colCli = M + 20;
+  const colProd = M + 66;
+  const colTipo = M + 134;
+  const colTotal = PW - M - 3;
+  const prodW = colTipo - colProd - 4;
+  const cliW = colProd - colCli - 4;
+  const BOTTOM = PH - 18;
+
+  let y = 70;
+  doc.setFont(FONT, 'bold');
+  doc.setFontSize(10);
+  doc.setTextColor(...DARK);
+  doc.text('DETALLE DE VENTAS', M, y);
+  y += 4;
+
+  function tableHeader() {
+    doc.setFillColor(...DARK);
+    doc.roundedRect(M, y, IW, 8, 1.5, 1.5, 'F');
+    doc.setFont(FONT, 'bold');
+    doc.setFontSize(7.5);
+    doc.setTextColor(...WHITE);
+    doc.text('HORA', colHora, y + 5.3);
+    doc.text('CLIENTE / FACTURA', colCli, y + 5.3);
+    doc.text('PRODUCTOS', colProd, y + 5.3);
+    doc.text('TIPO', colTipo, y + 5.3);
+    doc.text('TOTAL', colTotal, y + 5.3, { align: 'right' });
+    y += 10;
+  }
+  tableHeader();
+
   if (sales.length === 0) {
     doc.setFont(FONT, 'italic');
-    doc.setFontSize(8);
-    doc.text('No hay ventas registradas para esta fecha', PAGE_W / 2, y + 5, { align: 'center' });
-    y += 10;
-  } else {
-    sales.forEach(s => {
-      const time = new Date(s.created).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
-      const cliente = s.customerName || ('#' + s.id);
-      const prods = s.items.map(i => i.name + ' (' + i.quantity + ')').join(', ');
-      doc.text(time, colTime, y, { align: 'left' });
-      doc.text(fmtMoneyInvoice(s.total), colTotal, y, { align: 'right' });
-      doc.setFont(FONT, 'bold');
-      doc.setFontSize(7);
-      doc.text(abbreviateText(doc, cliente, colDesc - colTime), colDesc, y, { align: 'left' });
-      doc.setFont(FONT, 'normal');
-      doc.setFontSize(6);
-      const lines = doc.splitTextToSize(prods, INNER_W - 24);
-      doc.text(lines, colDesc, y + 3, { align: 'left' });
-      y += 3 + lines.length * 2.5;
-      y += 1;
-      pdfLine(doc, MARGIN_X, INNER_W, y);
-      y += 2;
-    });
+    doc.setFontSize(10);
+    doc.setTextColor(...GRAY);
+    doc.text('No hay ventas registradas para esta fecha', PW / 2, y + 12, { align: 'center' });
+    y += 24;
   }
-  y += 2;
+
+  sales.forEach((s, idx) => {
+    const time = new Date(s.created).toLocaleTimeString('es-ES', { hour: '2-digit', minute: '2-digit' });
+    const cliente = s.customerName || 'Sin nombre';
+
+    doc.setFont(FONT, 'bold');
+    doc.setFontSize(8.5);
+    let cliLines = doc.splitTextToSize(cliente, cliW);
+    if (cliLines.length > 2) cliLines = cliLines.slice(0, 2);
+    cliLines = cliLines.map(l => abbreviateText(doc, l, cliW));
+
+    doc.setFont(FONT, 'normal');
+    doc.setFontSize(7.5);
+    const prodLines = doc.splitTextToSize(s.items.map(i => i.name + ' (' + i.quantity + ')').join(', '), prodW);
+
+    const leftH = cliLines.length * 3.8 + 3.5;
+    const rowH = Math.max(leftH, prodLines.length * 3.5) + 4;
+
+    if (y + rowH > BOTTOM) {
+      doc.addPage();
+      y = M;
+      tableHeader();
+    }
+
+    if (idx % 2 === 0) {
+      doc.setFillColor(...SOFT);
+      doc.rect(M, y - 1, IW, rowH, 'F');
+    }
+
+    doc.setFont(FONT, 'normal');
+    doc.setFontSize(8.5);
+    doc.setTextColor(...DARK);
+    doc.text(time, colHora, y + 3.5);
+
+    doc.setFont(FONT, 'bold');
+    doc.setFontSize(8.5);
+    doc.text(cliLines, colCli, y + 3.5);
+    doc.setFont(FONT, 'normal');
+    doc.setFontSize(6.5);
+    doc.setTextColor(...GRAY);
+    doc.text('N° ' + s.id, colCli, y + 3.5 + cliLines.length * 3.8);
+
+    doc.setFontSize(7.5);
+    doc.setTextColor(...DARK);
+    doc.text(prodLines, colProd, y + 3.5);
+
+    const fiscal = s.receiptType === 'fiscal';
+    doc.setFont(FONT, 'bold');
+    doc.setFontSize(7.5);
+    doc.setTextColor(...(fiscal ? BLUE : GRAY));
+    doc.text(fiscal ? 'Fiscal' : 'Normal', colTipo, y + 3.5);
+
+    doc.setFontSize(9);
+    doc.setTextColor(...GREEN);
+    doc.text(money(s.total), colTotal, y + 3.5, { align: 'right' });
+
+    y += rowH;
+    doc.setDrawColor(...BORDER);
+    doc.setLineWidth(0.2);
+    doc.line(M, y - 1, M + IW, y - 1);
+  });
+
+  // ===== Totales =====
+  y += 4;
+  if (y + 32 > BOTTOM) { doc.addPage(); y = M; }
+  const bw = 84, bx = PW - M - bw;
+  doc.setFillColor(...SOFT);
+  doc.setDrawColor(...BORDER);
+  doc.setLineWidth(0.3);
+  doc.roundedRect(bx, y, bw, 30, 2.5, 2.5, 'FD');
 
   doc.setFont(FONT, 'normal');
-  doc.setFontSize(10);
-  doc.text('Subtotal:', MARGIN_X, y, { align: 'left' });
-  doc.text(fmtMoneyInvoice(subtotal), colTotal, y, { align: 'right' });
-  y += 4;
-  doc.text('ITBIS (18%):', MARGIN_X, y, { align: 'left' });
-  doc.text(fmtMoneyInvoice(itbis), colTotal, y, { align: 'right' });
-  y += 4;
+  doc.setFontSize(9.5);
+  doc.setTextColor(...GRAY);
+  doc.text('Subtotal', bx + 5, y + 8);
+  doc.text('ITBIS (18%)', bx + 5, y + 14.5);
+  doc.setTextColor(...DARK);
+  doc.text(money(subtotal), bx + bw - 5, y + 8, { align: 'right' });
+  doc.text(money(itbis), bx + bw - 5, y + 14.5, { align: 'right' });
+
+  doc.setFillColor(...GREEN);
+  doc.roundedRect(bx + 3, y + 18.5, bw - 6, 9, 2, 2, 'F');
   doc.setFont(FONT, 'bold');
-  doc.setFontSize(12);
-  doc.text('TOTAL:', MARGIN_X, y, { align: 'left' });
-  doc.text(fmtMoneyInvoice(total), colTotal, y, { align: 'right' });
-  y += 5;
-  pdfLine(doc, MARGIN_X, INNER_W, y);
-  y += 4;
+  doc.setFontSize(11);
+  doc.setTextColor(...WHITE);
+  doc.text('TOTAL', bx + 7, y + 24.8);
+  doc.text(money(total), bx + bw - 7, y + 24.8, { align: 'right' });
 
-  doc.setFont(FONT, 'normal');
-  doc.setFontSize(7);
-  doc.text('*** Gracias por su preferencia ***', PAGE_W / 2, y, { align: 'center' });
-  y += 3;
-  doc.text('Reporte generado el ' + new Date().toLocaleString('es-ES'), PAGE_W / 2, y, { align: 'center' });
+  // ===== Pie de página en todas las páginas =====
+  const pages = doc.getNumberOfPages();
+  for (let p = 1; p <= pages; p++) {
+    doc.setPage(p);
+    doc.setDrawColor(...BORDER);
+    doc.setLineWidth(0.3);
+    doc.line(M, PH - 12, PW - M, PH - 12);
+    doc.setFont(FONT, 'normal');
+    doc.setFontSize(7.5);
+    doc.setTextColor(...GRAY);
+    doc.text(bizName + ' · Reporte de ventas ' + reportDate, M, PH - 7);
+    doc.text('Página ' + p + ' de ' + pages, PW - M, PH - 7, { align: 'right' });
+  }
 
-  const todayIso = new Date().toISOString().split('T')[0];
-  doc.save('reporte-' + (dateStr || todayIso) + '.pdf');
+  doc.save('reporte-' + dateStr + '.pdf');
 }
-
 function printBarcodeLabels() {
   const products = getProducts();
   generateLabelPDF(products);
@@ -3134,21 +3743,35 @@ function generateLabelPDF(products) {
   if (!products.length) { alert('No hay productos para imprimir'); return; }
 
   const doc = new jsPDF({ unit: 'mm', format: 'a4' });
-  const labelW = 100;
-  const labelH = 70;
-  const marginX = 10;
-  const marginY = 15;
-  const gapX = 4;
-  const gapY = 6;
-  const cols = 1;
-  const rowsPerPage = Math.floor((297 - marginY * 2 + gapY) / (labelH + gapY));
 
-  const primaryColor = [37, 99, 235];
-  const secondaryColor = [30, 41, 59];
-  const textColor = [30, 41, 59];
-  const white = [255, 255, 255];
+  // ===== Medidas de la etiqueta (puedes ajustarlas) =====
+  const W = 95;            // ancho
+  const H = 60;            // alto
+  const cols = 2;
+  const gapX = 4;
+  const gapY = 5;
+  const marginY = 12;
+  const marginX = (210 - (cols * W + (cols - 1) * gapX)) / 2;
+  const rowsPerPage = Math.floor((297 - marginY * 2 + gapY) / (H + gapY));
+  const R = 3;             // radio de las esquinas
+  const HEADER_H = 12;
+  const FOOTER_H = 14;
+
+  // ===== Colores del sistema =====
+  const DARK = [30, 41, 59];       // --secondary
+  const BLUE = [37, 99, 235];      // --primary
+  const GREEN = [16, 185, 129];    // --success
+  const GRAY = [100, 116, 139];    // --text-sec
+  const BORDER = [226, 232, 240];
+  const SOFT = [248, 250, 252];
+  const WHITE = [255, 255, 255];
+
+  // Logo igual al del menú lateral: primera palabra en azul + "Pro" en blanco
+  const bizFull = (localStorage.getItem('salesstock_bizname') || 'SalesStock Pro').trim();
+  const logoWord = bizFull.split(' ')[0] || 'SalesStock';
 
   let col = 0, row = 0;
+
   products.forEach((p) => {
     if (row >= rowsPerPage) {
       doc.addPage();
@@ -3156,65 +3779,115 @@ function generateLabelPDF(products) {
       col = 0;
     }
 
-    const x = marginX + col * (labelW + gapX);
-    const y = marginY + row * (labelH + gapY);
+    const x = marginX + col * (W + gapX);
+    const y = marginY + row * (H + gapY);
+    const cx = x + W / 2;
+    const code = String(p.barcode || ('S' + p.id));
 
-    doc.setDrawColor(226, 232, 240);
-    doc.setFillColor(255, 255, 255);
-    doc.roundedRect(x, y, labelW, labelH, 4, 4, 'FD');
+    // ----- Fondo blanco -----
+    doc.setFillColor(...WHITE);
+    doc.roundedRect(x, y, W, H, R, R, 'F');
 
-    doc.setFillColor(...primaryColor);
-    doc.roundedRect(x + 2, y + 2, labelW - 4, 14, 3, 3, 'F');
-    doc.setTextColor(...white);
-    doc.setFontSize(12);
+    // ----- Encabezado oscuro (solo esquinas superiores redondeadas) -----
+    doc.setFillColor(...DARK);
+    doc.roundedRect(x, y, W, HEADER_H, R, R, 'F');
+    doc.rect(x, y + HEADER_H / 2, W, HEADER_H / 2, 'F');
+
+    // Logo: se reduce la letra si el nombre es muy largo
+    let logoSize = 13;
     doc.setFont('helvetica', 'bold');
-    const bizName = (localStorage.getItem('salesstock_bizname') || 'SalesStock Pro').trim();
-    doc.text(bizName.toUpperCase(), x + labelW / 2, y + 10, { align: 'center' });
+    doc.setFontSize(logoSize);
+    while (logoSize > 8 && doc.getTextWidth(logoWord + 'Pro') > W - 10) {
+      logoSize -= 0.5;
+      doc.setFontSize(logoSize);
+    }
+    const w1 = doc.getTextWidth(logoWord);
+    const w2 = doc.getTextWidth('Pro');
+    const logoX = cx - (w1 + w2) / 2;
+    doc.setTextColor(...BLUE);
+    doc.text(logoWord, logoX, y + 8.2);
+    doc.setTextColor(...WHITE);
+    doc.text('Pro', logoX + w1, y + 8.2);
 
-    doc.setTextColor(...textColor);
-    doc.setFontSize(14);
+    // ----- Nombre del producto (máx. 2 líneas) -----
+    doc.setTextColor(...DARK);
     doc.setFont('helvetica', 'bold');
-    const productName = (p.name || '').toUpperCase();
-    const lines = doc.splitTextToSize(productName, labelW - 10);
-    doc.text(lines, x + labelW / 2, y + 22, { align: 'center' });
-
-    doc.setFontSize(10);
-    doc.setFont('helvetica', 'normal');
-    doc.setTextColor(100, 116, 139);
-    doc.text('Código: ' + (p.barcode || ('S' + p.id)), x + labelW / 2, y + 30, { align: 'center' });
-
-    const canvas = document.createElement('canvas');
-    canvas.width = 400;
-    canvas.height = 120;
-    try {
-      JsBarcode(canvas, p.barcode || ('S' + p.id), {
-        format: 'CODE128',
-        lineColor: '#000000',
-        width: 2,
-        height: 60,
-        displayValue: false
-      });
-      const imgData = canvas.toDataURL('image/png');
-      doc.addImage(imgData, 'PNG', x + 10, y + 32, labelW - 20, 22);
-    } catch (e) {
-      doc.setFontSize(11);
-      doc.setTextColor(...textColor);
-      doc.text(p.barcode || 'N/A', x + labelW / 2, y + 46, { align: 'center' });
+    doc.setFontSize(10.5);
+    let lines = doc.splitTextToSize((p.name || '').toUpperCase(), W - 10);
+    if (lines.length > 2) {
+      lines = lines.slice(0, 2);
+      lines[1] = abbreviateText(doc, lines[1] + '...', W - 10);
+    }
+    if (lines.length === 1) {
+      doc.text(lines[0], cx, y + 20, { align: 'center' });
+    } else {
+      doc.text(lines[0], cx, y + 18.5, { align: 'center' });
+      doc.text(lines[1], cx, y + 23, { align: 'center' });
     }
 
-    doc.setFontSize(12);
-    doc.setFont('courier', 'bold');
-    doc.setTextColor(...textColor);
-    doc.text((p.barcode || ('S' + p.id)), x + labelW / 2, y + 58, { align: 'center' });
+    // ----- Código de barras (con proporción correcta) -----
+    const canvas = document.createElement('canvas');
+    try {
+      JsBarcode(canvas, code, {
+        format: 'CODE128',
+        lineColor: '#1e293b',
+        width: 2,
+        height: 60,
+        margin: 4,
+        displayValue: false
+      });
+      const ratio = canvas.width / canvas.height;
+      let drawH = 13;
+      let drawW = drawH * ratio;
+      if (drawW > W - 16) {
+        drawW = W - 16;
+        drawH = drawW / ratio;
+      }
+      doc.addImage(canvas.toDataURL('image/png'), 'PNG', cx - drawW / 2, y + 26, drawW, drawH);
+    } catch (e) {
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(11);
+      doc.setTextColor(...DARK);
+      doc.text(code, cx, y + 34, { align: 'center' });
+    }
 
-    doc.setFillColor(...primaryColor);
-    doc.roundedRect(x + 2, y + labelH - 16, labelW - 4, 14, 3, 3, 'F');
-    doc.setTextColor(...white);
-    doc.setFontSize(11);
+    // ----- Código en texto -----
+    doc.setFont('courier', 'bold');
+    doc.setFontSize(8);
+    doc.setTextColor(...GRAY);
+    doc.text(code, cx, y + 43, { align: 'center' });
+
+    // ----- Pie claro (solo esquinas inferiores redondeadas) -----
+    const fy = y + H - FOOTER_H;
+    doc.setFillColor(...SOFT);
+    doc.roundedRect(x, fy, W, FOOTER_H, R, R, 'F');
+    doc.rect(x, fy, W, FOOTER_H / 2, 'F');
+    doc.setDrawColor(...BORDER);
+    doc.setLineWidth(0.3);
+    doc.line(x, fy, x + W, fy);
+
+    // "PRECIO" a la izquierda
     doc.setFont('helvetica', 'bold');
-    doc.text('PRECIO', x + labelW / 2, y + labelH - 10, { align: 'center' });
-    doc.setFontSize(18);
-    doc.text('RD$ ' + Number(p.price).toFixed(2), x + labelW / 2, y + labelH - 3, { align: 'center' });
+    doc.setFontSize(7.5);
+    doc.setTextColor(...GRAY);
+    doc.text('PRECIO', x + 6, fy + 8.3);
+
+    // Monto en píldora verde a la derecha
+    const priceText = fmtMoneyInvoice(p.price);
+    doc.setFontSize(13);
+    const pillW = doc.getTextWidth(priceText) + 9;
+    const pillH = 9;
+    const pillX = x + W - 5 - pillW;
+    const pillY = fy + (FOOTER_H - pillH) / 2;
+    doc.setFillColor(...GREEN);
+    doc.roundedRect(pillX, pillY, pillW, pillH, 2.5, 2.5, 'F');
+    doc.setTextColor(...WHITE);
+    doc.text(priceText, pillX + pillW / 2, pillY + 6.4, { align: 'center' });
+
+    // ----- Borde exterior (al final, para que quede encima) -----
+    doc.setDrawColor(...BORDER);
+    doc.setLineWidth(0.4);
+    doc.roundedRect(x, y, W, H, R, R, 'S');
 
     col++;
     if (col >= cols) {
@@ -3225,7 +3898,6 @@ function generateLabelPDF(products) {
 
   doc.save('etiquetas.pdf');
 }
-
 // Exponer al window para que el HTML pueda acceder
 window.state = state;
 window.logout = logout;
@@ -3308,7 +3980,7 @@ window.addEventListener('beforeunload', (e) => {
       state.registerLicenseOk = false;
       state.registerLicenseKey = '';
       try {
-        await window.App.Services.DB.init();
+        ensureDB().catch(() => {}); // precarga en segundo plano
         const users = await window.App.Services.DB.get('users');
         const profile = users.find(u => u.email === email);
         if (profile) {
