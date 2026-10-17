@@ -490,3 +490,88 @@ td .flex { flex-wrap: nowrap; }
 .tabla-usuarios td { vertical-align: middle; overflow-wrap: anywhere; }
 .tabla-usuarios .acciones-fila { display: flex; gap: 6px; flex-wrap: nowrap; }
 @media (max-width: 768px) { .empresa-grid { grid-template-columns: 1fr; } }
+/* ===== Adaptación a tablet y teléfono ===== */
+.topbar, .menu-backdrop { display: none; }
+.main { min-width: 0; }
+
+@media (max-width: 1100px) {
+  :root { --sidebar: 210px; }
+}
+
+@media (max-width: 900px) {
+  /* Barra superior y menú deslizable */
+  .topbar {
+    display: flex; align-items: center; gap: 12px;
+    position: fixed; top: 0; left: 0; right: 0; height: 56px;
+    padding: 0 12px; background: var(--secondary);
+    z-index: 900; box-shadow: 0 2px 8px rgba(0, 0, 0, .2);
+  }
+  .menu-btn {
+    background: rgba(255, 255, 255, .1); border: none; color: #fff;
+    font-size: 22px; width: 42px; height: 42px; border-radius: 10px; cursor: pointer;
+  }
+  .topbar-title {
+    font-weight: 700; font-size: 18px; color: var(--primary);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .sidebar {
+    display: flex !important;
+    width: 270px; max-width: 84vw; height: 100dvh; overflow-y: auto;
+    z-index: 1001; transform: translateX(-105%);
+    transition: transform .28s cubic-bezier(.4, 0, .2, 1);
+  }
+  .app.menu-open .sidebar { transform: none; box-shadow: 0 0 40px rgba(0, 0, 0, .5); }
+  .menu-backdrop {
+    display: block; position: fixed; inset: 0; background: rgba(0, 0, 0, .5);
+    opacity: 0; pointer-events: none; transition: opacity .25s; z-index: 1000;
+  }
+  .app.menu-open .menu-backdrop { opacity: 1; pointer-events: auto; }
+
+  /* Contenido */
+  .main { margin-left: 0 !important; padding: 72px 14px 20px; }
+  .main-with-alert { padding-bottom: 110px !important; }
+  .header { flex-wrap: wrap; gap: 12px; }
+  h1 { font-size: 22px; }
+  .stats { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+  .stat { padding: 16px; }
+  .stat-icon { width: 44px; height: 44px; font-size: 20px; }
+  .stat-value { font-size: 22px; overflow-wrap: anywhere; }
+  .grid-2, .form-row { grid-template-columns: 1fr; }
+  .alert-container { width: 92vw; }
+  .alert-box { width: 100%; }
+
+  /* Tablas: se desplazan de lado dentro de la tarjeta, no se cortan */
+  .card { overflow-x: auto; }
+  .card table:where(:not([class])) { min-width: 640px; }
+  th, td { padding: 10px 12px; }
+
+  /* Punto de Venta: productos arriba, carrito abajo */
+  .main [style*="grid-template-columns:1fr 350px"] {
+    grid-template-columns: 1fr !important;
+    height: auto !important;
+  }
+  .main [style*="grid-template-columns:1fr 350px"] > .card { height: auto !important; min-height: 0; }
+  .main [style*="minmax(180px,1fr)"] {
+    grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)) !important;
+  }
+
+  /* Ventanas emergentes */
+  .modal-overlay { padding: 10px; }
+  .modal { max-height: 92dvh; }
+  .modal-body { padding: 16px; }
+  .modal [style*="grid-template-columns:1fr 1fr"] { grid-template-columns: 1fr !important; }
+
+  /* Evita que el teléfono haga zoom al tocar un campo */
+  input, select, textarea, .form-control, .search-input { font-size: 16px !important; }
+}
+
+@media (max-width: 480px) {
+  .login-card { padding: 28px 20px; }
+  .btn { padding: 11px 14px; }
+}
+
+/* Pantallas táctiles: botones más fáciles de tocar */
+@media (pointer: coarse) {
+  .btn-sm { min-height: 38px; }
+  .nav-link { padding: 14px 16px; }
+}

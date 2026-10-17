@@ -1593,6 +1593,11 @@ function printPdfDirect(doc) {
   const showAlert = lowStock.length > 0 && !state.alertDismissed;
   app.innerHTML = `
     <div class="app">
+      <div class="topbar">
+        <button class="menu-btn" onclick="toggleMenu()" aria-label="Abrir menú">☰</button>
+        <div class="topbar-title">${escapeHtml(localStorage.getItem('salesstock_bizname') || 'SalesStock Pro')}</div>
+      </div>
+      <div class="menu-backdrop" onclick="toggleMenu()"></div>
       <div class="sidebar">
         <div class="logo">${(localStorage.getItem('salesstock_bizname') || 'SalesStock').split(' ')[0]}<span>Pro</span></div>
         <nav class="nav">
@@ -1627,6 +1632,12 @@ function printPdfDirect(doc) {
   `;
   hideScannerDropdownIfNotProductSearch();
 }
+
+function toggleMenu() {
+  const app = document.querySelector('.app');
+  if (app) app.classList.toggle('menu-open');
+}
+window.toggleMenu = toggleMenu;
 
 function hideScannerDropdownIfNotProductSearch() {
   const dropdown = document.getElementById('scanner-dropdown');
