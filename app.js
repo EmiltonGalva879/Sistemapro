@@ -123,50 +123,96 @@ let state = {
   reportDate: localDateStr(new Date()),
 };
 
+const SUPER_EMAIL = 'sistemapro@sistema.local';
+let sessionLoading = false; // evita que onAuthStateChanged interfiera mientras se registra una cuenta
+
+function authEmail(username) {
+  return String(username || '').trim().toLowerCase() + '@sistema.local';
+}
+
+// Carga el perfil de la sesión de Firebase y decide a qué pantalla ir
+async function loadSession(fbUser) {
+  const email = (fbUser.email || '').toLowerCase();
+
+  if (email === SUPER_EMAIL) {
+    await ensureDB();
+    state.user = { id: '1', username: 'Sistemapro', email: email, role: 'ADMIN', licensed: true,
+      created: (fbUser.metadata && fbUser.metadata.creationTime) || new Date().toISOString() };
+    state.page = 'sales';
+    return;
+  }
+
+  const snap = await window.FB_DB.collection('profiles').doc(fbUser.uid).get();
+  if (!snap.exists) {
+    // Cuenta sin licencia: debe activarla
+    state.user = { id: fbUser.uid, username: email.split('@')[0], email: email, role: 'ADMIN', licensed: false };
+    state.page = 'activate-license';
+    return;
+  }
+
+  const profile = snap.data();
+  await ensureDB(profile.companyId);
+  const entry = window.App.Services.DB.get('users').find(u => String(u.id) === fbUser.uid) || {};
+  state.user = {
+    ...entry,
+    id: fbUser.uid,
+    username: profile.username,
+    email: email,
+    role: profile.role,
+    companyId: profile.companyId,
+    createdBy: entry.createdBy || profile.createdBy || '1',
+    licensed: true
+  };
+  state.page = 'sales';
+}
+
+// Reclama una licencia: crea el perfil y marca la licencia como usada en una sola operación atómica
+async function claimLicense(uid, username, email, key) {
+  key = (key || '').trim();
+  if (!key || /[\/\s]/.test(key)) throw new Error('Clave de licencia inválida');
+
+  const keyRef = window.FB_DB.collection('licenseKeys').doc(key);
+  const snap = await keyRef.get();
+  if (!snap.exists) throw new Error('Clave de licencia inválida');
+  if (snap.data().used) throw new Error('Esta licencia ya fue utilizada');
+
+  const now = new Date().toISOString();
+  const batch = window.FB_DB.batch();
+  batch.set(window.FB_DB.collection('profiles').doc(uid), {
+    uid: uid, username: username, email: email, role: 'ADMIN',
+    companyId: uid, licenseKey: key, createdBy: '1', created: now
+  });
+  batch.update(keyRef, { used: true, usedBy: uid, usedAt: now, companyId: uid });
+  try {
+    await batch.commit();
+  } catch (e) {
+    if (e && e.code === 'permission-denied') throw new Error('Clave de licencia inválida o ya utilizada');
+    throw e;
+  }
+
+  // A partir de aquí la licencia ya está activada; un fallo en lo siguiente no la deshace
+  try {
+    await ensureDB(uid);
+    const users = window.App.Services.DB.get('users');
+    if (!users.find(u => String(u.id) === uid)) {
+      users.push({ id: uid, username: username, email: email, role: 'ADMIN', created: now,
+        licenseKey: key, licensed: true, createdBy: '1', companyId: uid });
+      await window.App.Services.DB.set('users', users);
+    }
+  } catch (e) {
+    console.warn('[claimLicense] No se pudo guardar el usuario en la lista:', e);
+  }
+}
+
 async function login(username, password) {
+  username = (username || '').trim();
+  if (!username || !password) { state.loginError = 'Usuario y contraseña son obligatorios'; render(); return false; }
   try {
     state.loginError = '';
-    await ensureDB();
-    
-    if (username === 'Sistemapro' && password === 'Sistemapro1532') {
-      state.user = {
-        id: '1',
-        username: 'Sistemapro',
-        email: 'Sistemapro@sistema.local',
-        role: 'ADMIN',
-        licensed: true,
-        created: new Date().toISOString()
-      };
-      state.page = 'sales';
-      render();
-      return true;
-    }
-    
-    const users = await window.App.Services.DB.get('users');
-    const localUser = users.find(u => u.username === username);
-    
-    if (localUser) {
-      if (localUser.password === password) {
-        if (!localUser.companyId) {
-          localUser.companyId = String(localUser.id);
-          await window.App.Services.DB.set('users', users);
-        }
-        state.user = localUser;
-        state.page = 'sales';
-        render();
-        return true;
-      } else {
-        state.loginError = 'Contraseña incorrecta';
-        render();
-        return false;
-      }
-    }
-    
-    state.loginError = 'Usuario no encontrado. Verifica tu conexión a internet .';
-    render();
-    return false;
+    await window.App.Services.FirebaseAuth.login(username, password);
+    return true; // onAuthStateChanged carga la sesión y dibuja la pantalla
   } catch (e) {
-    state.loginError = 'Error de conexión. Verifica tu internet .';
+    state.loginError = mapAuthError(e);
     render();
     return false;
   }
@@ -175,27 +221,12 @@ async function login(username, password) {
 async function validateRegisterLicense(key) {
   key = (key || '').trim();
   if (!key) { state.loginError = 'Ingrese la clave de licencia'; render(); return; }
-  try {
-    const licenses = await window.App.Services.DB.get('licenses');
-    const license = licenses.find(l => l.key === key);
-    if (!license) {
-      state.loginError = 'Clave de licencia inválida';
-      render();
-      return;
-    }
-    if (license.used) {
-      state.loginError = 'Esta licencia ya fue utilizada';
-      render();
-      return;
-    }
-    state.loginError = '';
-    state.registerLicenseOk = true;
-    state.registerLicenseKey = key;
-    render();
-  } catch (e) {
-    state.loginError = 'Error al validar licencia';
-    render();
-  }
+  if (/[\/\s]/.test(key)) { state.loginError = 'Clave de licencia inválida'; render(); return; }
+  // La licencia se comprueba de verdad al crear la cuenta (requiere sesión de Firebase)
+  state.loginError = '';
+  state.registerLicenseOk = true;
+  state.registerLicenseKey = key;
+  render();
 }
 
 async function registerUser(username, password, confirmPassword) {
@@ -203,67 +234,50 @@ async function registerUser(username, password, confirmPassword) {
   username = (username || '').trim();
   if (!username || !password) { state.loginError = 'Usuario y contraseña son obligatorios'; render(); return false; }
   if (!licenseKey) { state.loginError = 'Falta la clave de licencia'; render(); return false; }
-  if (password.length < 4) { state.loginError = 'La contraseña debe tener al menos 4 caracteres'; render(); return false; }
+  if (!/^[a-zA-Z0-9_]{3,30}$/.test(username)) { state.loginError = 'Usuario: 3 a 30 caracteres, solo letras, números y guión bajo'; render(); return false; }
+  if (password.length < 8) { state.loginError = 'La contraseña debe tener al menos 8 caracteres'; render(); return false; }
   if (password !== confirmPassword) { state.loginError = 'Las contraseñas no coinciden'; render(); return false; }
+
+  let cred = null;
+  sessionLoading = true;
   try {
     state.loginError = '';
-    const licenses = await window.App.Services.DB.get('licenses');
-    const license = licenses.find(l => l.key === licenseKey);
-    if (!license) {
-      state.loginError = 'Clave de licencia inválida';
-      render();
-      return false;
-    }
-    if (license.used) {
-      state.loginError = 'Esta licencia ya fue utilizada';
-      render();
-      return false;
-    }
-    const users = await window.App.Services.DB.get('users');
-    const exists = users.find(u => u.username === username);
-    if (exists) {
-      state.loginError = 'Este nombre de usuario ya está registrado';
-      render();
-      return false;
-    }
-    const newId = 'U-' + Date.now();
-    const profile = {
-      id: newId,
-      username: username,
-      email: username + '@sistema.local',
-      password: password,
-      role: 'ADMIN',
-      created: new Date().toISOString(),
-      licenseKey: licenseKey,
-      licensed: true,
-      createdBy: '1',
-      companyId: newId
-    };
-    users.push(profile);
-    await window.App.Services.DB.set('users', users);
-    license.used = true;
-    license.usedBy = String(profile.id);
-    license.usedAt = new Date().toISOString();
-    license.companyId = newId;
-    await window.App.Services.DB.set('licenses', licenses);
-    state.user = profile;
-    state.page = 'sales';
-    state.registerLicenseOk = false;
-    state.registerLicenseKey = '';
-    render();
-    return true;
+    cred = await window.FB_AUTH.createUserWithEmailAndPassword(authEmail(username), password);
+    await claimLicense(cred.user.uid, username, authEmail(username), licenseKey);
   } catch (e) {
-    state.loginError = e.message || 'Error al registrar';
+    // Si la licencia no sirvió, no se deja la cuenta creada a medias
+    if (cred && cred.user) { try { await cred.user.delete(); } catch (_) {} }
+    sessionLoading = false;
+    state.loginError = mapAuthError(e);
     render();
     return false;
   }
+
+  try {
+    await loadSession(cred.user);
+    state.registerLicenseOk = false;
+    state.registerLicenseKey = '';
+    state.loginError = '';
+  } catch (e) {
+    console.error('Error cargando la sesión', e);
+    state.loginError = 'Cuenta creada. Inicia sesión para continuar.';
+    state.loginTab = 'login';
+    state.page = 'login';
+  } finally {
+    sessionLoading = false;
+    state.loading = false;
+    render();
+  }
+  return true;
 }
 
 function mapAuthError(e) {
   const code = e && e.code;
   if (code === 'auth/invalid-email') return 'Correo inválido';
   if (code === 'auth/user-not-found' || code === 'auth/wrong-password' || code === 'auth/invalid-credential') return 'Credenciales incorrectas';
-  if (code === 'auth/email-already-in-use') return 'Ese correo ya está registrado';
+  if (code === 'auth/email-already-in-use') return 'Ese nombre de usuario ya está registrado';
+  if (code === 'auth/too-many-requests') return 'Demasiados intentos. Espera unos minutos e inténtalo de nuevo';
+  if (code === 'auth/network-request-failed') return 'Error de conexión. Verifica tu internet';
   if (code === 'auth/weak-password') return 'La contraseña es muy débil (mínimo 6 caracteres)';
   return e && e.message ? e.message : 'Error de autenticación';
 }
@@ -272,30 +286,24 @@ async function logout() {
   if (window.isDirty && state.cart.length > 0) {
     if (!confirm('⚠️ Tienes ' + state.cart.length + ' producto(s) en el carrito.\n\n¿Seguro que quieres cerrar sesión?')) return;
   }
-  await window.App.Services.FirebaseAuth.logout();
-  state.user = null;
-  state.cart = [];
-  state.page = 'login';
-  state.loginError = '';
-  state.registerLicenseOk = false;
-  state.registerLicenseKey = '';
-  render();
+  try { await window.App.Services.FirebaseAuth.logout(); } catch (e) {}
+  window.App.Services.DB.destroy();
+  // Borra cualquier copia de datos que haya quedado en este navegador
+  try {
+    Object.keys(localStorage).filter(k => k.startsWith('salesstock_db_')).forEach(k => localStorage.removeItem(k));
+  } catch (e) {}
+  try {
+    await window.FB_DB.terminate();
+    await window.FB_DB.clearPersistence();
+  } catch (e) {}
+  location.reload();
 }
 
 async function loginWithGoogle() {
   try {
     state.loginError = '';
-    const profile = await window.App.Services.FirebaseAuth.loginWithGoogle();
-    const licensed = profile.licensed !== false;
-    if (!licensed) {
-      state.user = profile;
-      state.page = 'activate-license';
-      render();
-      return;
-    }
-    state.user = profile;
-    state.page = 'sales';
-    render();
+    await window.App.Services.FirebaseAuth.loginWithGoogle();
+    // onAuthStateChanged carga la sesión (o pide activar la licencia)
   } catch (e) {
     state.loginError = mapAuthError(e);
     render();
@@ -306,47 +314,8 @@ async function activateLicense(key) {
   key = (key || '').trim();
   if (!key) { state.loginError = 'Ingrese la clave de licencia'; render(); return false; }
   try {
-    const licenses = await window.App.Services.DB.get('licenses');
-    const license = licenses.find(l => l.key === key);
-    if (!license) {
-      state.loginError = 'Clave de licencia inválida';
-      render();
-      return false;
-    }
-    if (license.used && license.usedBy !== String(state.user.id)) {
-      state.loginError = 'Esta licencia ya fue utilizada por otra empresa';
-      render();
-      return false;
-    }
-    if (!license.used) {
-      license.used = true;
-      license.usedBy = String(state.user.id);
-      license.usedAt = new Date().toISOString();
-      if (!license.companyId) license.companyId = String(state.user.id);
-      await window.App.Services.DB.set('licenses', licenses);
-    }
-    const users = await window.App.Services.DB.get('users');
-    let idx = users.findIndex(u => u.id === state.user.id);
-    if (idx < 0) {
-      users.push({
-        id: state.user.id,
-        username: state.user.username,
-        email: state.user.email || '',
-        role: state.user.role || 'ADMIN',
-        created: new Date().toISOString(),
-        licenseKey: key,
-        licensed: true,
-        companyId: String(state.user.id)
-      });
-      idx = users.length - 1;
-    } else {
-      users[idx].licenseKey = key;
-      users[idx].licensed = true;
-      if (!users[idx].companyId) users[idx].companyId = String(state.user.id);
-    }
-    await window.App.Services.DB.set('users', users);
-    state.user = users[idx];
-    state.page = 'sales';
+    await claimLicense(String(state.user.id), state.user.username, state.user.email || '', key);
+    await loadSession(window.FB_AUTH.currentUser);
     state.loginError = '';
     state.registerLicenseOk = false;
     state.registerLicenseKey = '';
@@ -354,7 +323,7 @@ async function activateLicense(key) {
     return true;
   } catch (e) {
     console.error('activateLicense error', e);
-    state.loginError = e.message || 'Error al activar licencia';
+    state.loginError = mapAuthError(e);
     render();
     return false;
   }
@@ -498,11 +467,17 @@ function localDateStr(d) {
 }
 function fmtDateStr(s) { return s.split('-').reverse().join('/'); }
 
-function verifyPassword(pw) {
-  if (!pw) return false;
-  if (pw === 'Sistemapro1532') return true;
-  if (state.user && state.user.password && pw === state.user.password) return true;
-  return false;
+// Verifica la contraseña de la cuenta con la que se inició sesión (la valida Firebase, no el navegador)
+async function verifyPassword(pw) {
+  const u = window.FB_AUTH && window.FB_AUTH.currentUser;
+  if (!pw || !u || !u.email) return false;
+  try {
+    const credential = firebase.auth.EmailAuthProvider.credential(u.email, pw);
+    await u.reauthenticateWithCredential(credential);
+    return true;
+  } catch (e) {
+    return false;
+  }
 }
 
 
@@ -512,7 +487,7 @@ async function promptDeleteSale(id) {
   // Si el administrador cancela, no se elimina nada.
   if (pw === null) return;
 
-  if (!verifyPassword(pw)) {
+  if (!(await verifyPassword(pw))) {
     alert('Password incorrecta');
     return;
   }
@@ -936,28 +911,65 @@ function getUsers() {
   if (!companyId) return users;
   return users.filter(u => String(u.companyId) === companyId);
 }
-function saveUser(user) {
+async function saveUser(user) {
   const users = DB.get('users');
-  if (user.id) {
-    const visibleUsers = getUsers();
-    const idxInVisible = visibleUsers.findIndex(u => u.id === user.id);
-    if (idxInVisible < 0) return;
-    const idx = users.findIndex(u => u.id === user.id);
-    if (idx >= 0) users[idx] = { ...users[idx], ...user };
-  } else {
-    user.id = Date.now();
-    user.createdBy = String(state.user.id);
-    user.companyId = String(state.user.companyId || state.user.id);
-    user.licensed = true;
-    users.push(user);
+  try {
+    if (user.id) {
+      // Editar: solo se puede cambiar el rol (el usuario es el identificador de la cuenta)
+      const visibleUsers = getUsers();
+      if (!visibleUsers.find(u => String(u.id) === String(user.id))) return false;
+      const idx = users.findIndex(u => String(u.id) === String(user.id));
+      if (idx < 0) return false;
+      const role = user.role === 'ADMIN' ? 'ADMIN' : 'USER';
+      users[idx] = { ...users[idx], role: role };
+      await window.FB_DB.collection('profiles').doc(String(user.id)).update({ role: role });
+    } else {
+      const username = (user.username || '').trim();
+      if (!/^[a-zA-Z0-9_]{3,30}$/.test(username)) { alert('Usuario inválido: 3 a 30 caracteres, solo letras, números y guión bajo'); return false; }
+      if (!user.password || user.password.length < 8) { alert('La contraseña debe tener al menos 8 caracteres'); return false; }
+      if (users.find(u => String(u.username).toLowerCase() === username.toLowerCase())) { alert('Ese nombre de usuario ya está registrado'); return false; }
+
+      const email = authEmail(username);
+      const uid = await window.App.Services.FirebaseAuth.createUserNoSwitch(email, user.password);
+      const role = user.role === 'ADMIN' ? 'ADMIN' : 'USER';
+      const companyId = String(state.user.companyId || state.user.id);
+      const now = new Date().toISOString();
+      const createdBy = String(state.user.id);
+
+      await window.FB_DB.collection('profiles').doc(uid).set({
+        uid: uid, username: username, email: email, role: role,
+        companyId: companyId, createdBy: createdBy, created: now
+      });
+      users.push({ id: uid, username: username, email: email, role: role, created: now,
+        createdBy: createdBy, companyId: companyId, licensed: true });
+    }
+    await DB.set('users', users);
+    return true;
+  } catch (e) {
+    console.error('saveUser error', e);
+    alert(e && e.code === 'permission-denied' ? 'No tienes permiso para esta acción' : mapAuthError(e));
+    return false;
   }
-  DB.set('users', users);
 }
-function deleteUser(id) {
+
+async function deleteUser(id) {
   const visibleUsers = getUsers();
-  if (!visibleUsers.find(u => u.id === id)) return;
-  DB.set('users', DB.get('users').filter(u => u.id !== id));
+  if (!visibleUsers.find(u => String(u.id) === String(id))) return;
+  // Sin perfil, la cuenta ya no puede leer ni escribir datos
+  try { await window.FB_DB.collection('profiles').doc(String(id)).delete(); } catch (e) { console.warn('No se pudo borrar el perfil', e); }
+  await DB.set('users', DB.get('users').filter(u => String(u.id) !== String(id)));
 }
+
+async function confirmDeleteUser(id) {
+  const u = getUsers().find(x => String(x.id) === String(id));
+  const ok = await showConfirm('¿Eliminar al usuario ' + (u ? u.username : '') + '?', {
+    title: 'Eliminar usuario', icon: '👤', confirmText: 'Eliminar', danger: true
+  });
+  if (!ok) return;
+  await deleteUser(id);
+  render();
+}
+window.confirmDeleteUser = confirmDeleteUser;
 
 function testScanner() {
   state.testResult = '<div style="color:#f59e0b">⏳ Escanee un código con el lector... (10 segundos)</div>';
@@ -1663,9 +1675,9 @@ function renderLowStockAlert(lowStock) {
   `;
 }
 let dbReadyPromise = null;
-function ensureDB() {
+function ensureDB(companyId) {
   if (!dbReadyPromise) {
-    dbReadyPromise = window.App.Services.DB.init().catch(e => { dbReadyPromise = null; throw e; });
+    dbReadyPromise = window.App.Services.DB.init(companyId).catch(e => { dbReadyPromise = null; throw e; });
   }
   return dbReadyPromise;
 }
@@ -1701,14 +1713,14 @@ function renderLogin() {
       </div>
       <div class="form-group">
         <label>Contraseña</label>
-        <input type="password" class="form-control" name="rp" placeholder="Mínimo 4 caracteres" required>
+        <input type="password" class="form-control" name="rp" placeholder="Mínimo 8 caracteres" minlength="8" required>
       </div>
       <div class="form-group">
         <label>Confirmar contraseña</label>
         <input type="password" class="form-control" name="rp2" placeholder="Repite la contraseña" required>
       </div>
       <div style="background:#f0f9ff;border:1px solid #bae6fd;color:#0369a1;padding:10px 12px;border-radius:8px;margin-bottom:15px;font-size:13px">
-        Licencia validada: <strong>${state.registerLicenseKey}</strong>
+        Clave de licencia ingresada: <strong>${state.registerLicenseKey}</strong>
       </div>
       <button type="submit" class="btn btn-primary" style="width:100%">Crear cuenta</button>
       <button type="button" class="btn btn-secondary" style="width:100%;margin-top:10px" onclick="state.registerLicenseOk=false;state.registerLicenseKey='';state.loginError='';render()">Cambiar licencia</button>
@@ -2054,7 +2066,7 @@ window.promptDeleteFiado = async function(id) {
 
   if (pw === null) return;
 
-  if (!verifyPassword(pw)) {
+  if (!(await verifyPassword(pw))) {
     alert('Contraseña incorrecta');
     return;
   }
@@ -3080,6 +3092,7 @@ function deleteLicense(key) {
       DB.set('products', products);
       DB.set('sales', sales);
       DB.set('fiados', fiados);
+      usersToDelete.forEach(uid => { window.FB_DB.collection('profiles').doc(String(uid)).delete().catch(() => {}); });
       console.log('deleted users:', usersToDelete);
     }
   }
@@ -3211,7 +3224,7 @@ function renderUsers() {
                 <td class="col-acciones">
                   <div class="acciones-fila">
                     <button class="btn btn-secondary btn-sm" onclick="state.modal={type:'user',user:${JSON.stringify(u).replace(/"/g, '&quot;')}};render()" title="Editar">✏️</button>
-                    <button class="btn btn-danger btn-sm" onclick="confirmDeleteUser(${u.id})" title="Eliminar">🗑️</button>
+                    <button class="btn btn-danger btn-sm" onclick="confirmDeleteUser('${u.id}')" title="Eliminar">🗑️</button>
                   </div>
                 </td>
               </tr>
@@ -3286,10 +3299,10 @@ function renderModal() {
       <div class="modal-overlay" onclick="state.modal=null;render()">
         <div class="modal" onclick="event.stopPropagation()">
           <div class="modal-header"><h2 class="modal-title">${u.id?'Editar':'Nuevo'} Usuario</h2><button class="btn btn-secondary" onclick="state.modal=null;render()">✕</button></div>
-          <form onsubmit="event.preventDefault();saveUser({id:${u.id||'null'},username:this.u.value,password:this.p.value,role:this.r.value,created:new Date().toISOString()});state.modal=null;render()">
+          <form onsubmit="event.preventDefault();saveUser({id:${u.id?"'"+u.id+"'":'null'},username:this.u.value,password:this.p?this.p.value:'',role:this.r.value}).then(ok=>{if(ok!==false){state.modal=null;render()}})">
             <div class="modal-body">
-              <div class="form-group"><label>Usuario *</label><input class="form-control" name="u" value="${u.username||''}" required></div>
-              ${!u.id ? `<div class="form-group"><label>Contraseña *</label><input class="form-control" name="p" required></div>` : ''}
+              <div class="form-group"><label>Usuario *</label><input class="form-control" name="u" value="${escapeHtml(u.username||'')}" ${u.id?'readonly style="background:#f1f5f9"':''} required></div>
+              ${!u.id ? `<div class="form-group"><label>Contraseña * (mínimo 8 caracteres)</label><input class="form-control" name="p" type="password" autocomplete="new-password" minlength="8" required></div>` : ''}
               <div class="form-group"><label>Rol</label><select class="form-control" name="r"><option value="USER" ${u.role==='USER'?'selected':''}>Usuario</option><option value="ADMIN" ${u.role==='ADMIN'?'selected':''}>Administrador</option></select></div>
             </div>
             <div class="modal-footer"><button type="button" class="btn btn-secondary" onclick="state.modal=null;render()">Cancelar</button><button type="submit" class="btn btn-primary">${u.id?'Actualizar':'Crear'}</button></div>
@@ -3984,31 +3997,15 @@ window.addEventListener('beforeunload', (e) => {
   }
 
   window.App.Services.FirebaseAuth.onAuthChange(async (user) => {
+    if (sessionLoading) return; // se está creando una cuenta: registerUser se encarga
     if (user) {
-      const email = user.email || '';
-      state.user = { id: user.uid, username: email.split('@')[0], email: email, role: 'ADMIN', licensed: false };
-      state.page = 'activate-license';
-      state.registerLicenseOk = false;
-      state.registerLicenseKey = '';
       try {
-        ensureDB().catch(() => {}); // precarga en segundo plano
-        const users = await window.App.Services.DB.get('users');
-        const profile = users.find(u => u.email === email);
-        if (profile) {
-          if (!profile.companyId) {
-            profile.companyId = String(profile.id);
-            await window.App.Services.DB.set('users', users);
-          }
-          state.user = profile;
-          const licensed = profile.licensed !== false;
-          if (licensed) {
-            state.page = 'sales';
-          } else {
-            state.page = 'activate-license';
-          }
-        }
+        await loadSession(user);
       } catch (e) {
-        console.error('Error inicializando Firestore', e);
+        console.error('Error cargando la sesión', e);
+        state.user = null;
+        state.page = 'login';
+        state.loginError = 'No se pudo cargar tu sesión. Verifica tu conexión e inténtalo de nuevo.';
       }
     } else {
       state.user = null;
