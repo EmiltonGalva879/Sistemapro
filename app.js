@@ -335,6 +335,38 @@ function getCompanyId() {
   return String(state.user.companyId || state.user.id);
 }
 
+// ===== Datos de la empresa (por licencia/empresa, guardados en Firestore) =====
+const DEFAULT_BRAND = 'SalesStock Pro';
+
+function getBizSettings() {
+  const cid = getCompanyId() || '1';
+  let list = [];
+  try { list = DB.get('settings') || []; } catch (e) {}
+  return list.find(s => String(s.companyId) === cid) || {};
+}
+
+function bizGet(field) {
+  return String(getBizSettings()[field] || '');
+}
+
+// Nombre propio de la empresa; vacío si no ha puesto uno (o dejó el de por defecto)
+function bizCustomName() {
+  const n = bizGet('bizname').trim();
+  return n.toLowerCase() === DEFAULT_BRAND.toLowerCase() ? '' : n;
+}
+
+// Último nombre usado en este dispositivo: solo para la pantalla de login (aún sin sesión)
+function cachedBizName() {
+  try { return (localStorage.getItem('salesstock_bizname') || '').trim(); } catch (e) { return ''; }
+}
+
+// Con nombre propio se muestra solo ese nombre; sin él, "SalesStock Pro"
+function brandHtml(name) {
+  name = (name || '').trim();
+  if (!name || name.toLowerCase() === DEFAULT_BRAND.toLowerCase()) return 'SalesStock<span>Pro</span>';
+  return escapeHtml(name);
+}
+
 function getVisibleOwners(userId) {
   const owners = new Set([String(userId)]);
   const users = getUsers();
@@ -1052,11 +1084,11 @@ function pdfField(doc, label, value, y) {
   return y + 5;
 }
 function pdfCalcInvoiceHeight(sale) {
-  const bizName = localStorage.getItem('salesstock_bizname') || '';
-  const bizRnc = localStorage.getItem('salesstock_bizrnc') || '';
-  const bizPhone = localStorage.getItem('salesstock_bizphone') || '';
-  const bizEmail = localStorage.getItem('salesstock_bizemail') || '';
-  const bizAddr = localStorage.getItem('salesstock_bizaddress') || '';
+  const bizName = bizGet('bizname') || '';
+  const bizRnc = bizGet('bizrnc') || '';
+  const bizPhone = bizGet('bizphone') || '';
+  const bizEmail = bizGet('bizemail') || '';
+  const bizAddr = bizGet('bizaddress') || '';
   const tmp = new jsPDF({ unit: 'mm', format: [80, 1000] });
   let h = 10;
   h += 8;
@@ -1083,11 +1115,11 @@ function pdfCalcInvoiceHeight(sale) {
 
 function pdfCalcReportHeight(sales) {
   let h = 10;
-  const bizName = localStorage.getItem('salesstock_bizname') || '';
-  const bizPhone = localStorage.getItem('salesstock_bizphone') || '';
-  const bizEmail = localStorage.getItem('salesstock_bizemail') || '';
-  const bizAddr = localStorage.getItem('salesstock_bizaddress') || '';
-  const bizRnc = localStorage.getItem('salesstock_bizrnc') || '';
+  const bizName = bizGet('bizname') || '';
+  const bizPhone = bizGet('bizphone') || '';
+  const bizEmail = bizGet('bizemail') || '';
+  const bizAddr = bizGet('bizaddress') || '';
+  const bizRnc = bizGet('bizrnc') || '';
   const tmp = new jsPDF({ unit: 'mm', format: [80, 1000] });
   if (bizName) h += 4;
   [bizPhone, bizEmail].forEach(v => { if (v) h += 4; });
@@ -1117,11 +1149,11 @@ function pdfCalcReportHeight(sales) {
 function generateQuoteInvoice(quote) {
   const doc = new jsPDF({ unit: 'mm', format: [PAGE_W, pdfCalcInvoiceHeight(quote)] });
   let y = MARGIN_X;
-  const bizName = localStorage.getItem('salesstock_bizname') || 'SALESSTOCK PRO';
-  const bizRnc = localStorage.getItem('salesstock_bizrnc') || '';
-  const bizPhone = localStorage.getItem('salesstock_bizphone') || '';
-  const bizEmail = localStorage.getItem('salesstock_bizemail') || '';
-  const bizAddr = localStorage.getItem('salesstock_bizaddress') || '';
+  const bizName = bizGet('bizname') || 'SALESSTOCK PRO';
+  const bizRnc = bizGet('bizrnc') || '';
+  const bizPhone = bizGet('bizphone') || '';
+  const bizEmail = bizGet('bizemail') || '';
+  const bizAddr = bizGet('bizaddress') || '';
 
   doc.setFont(FONT, 'bold');
   doc.setFontSize(15);
@@ -1252,11 +1284,11 @@ function buildInvoiceDocument(sale, pageH) {
 
   const doc = new jsPDF({ unit: 'mm', format: [PAGE_W, pageH] });
   let y = MARGIN_X;
-  const bizName = localStorage.getItem('salesstock_bizname') || 'SALESSTOCK PRO';
-  const bizRnc = localStorage.getItem('salesstock_bizrnc') || '';
-  const bizPhone = localStorage.getItem('salesstock_bizphone') || '';
-  const bizEmail = localStorage.getItem('salesstock_bizemail') || '';
-  const bizAddr = localStorage.getItem('salesstock_bizaddress') || '';
+  const bizName = bizGet('bizname') || 'SALESSTOCK PRO';
+  const bizRnc = bizGet('bizrnc') || '';
+  const bizPhone = bizGet('bizphone') || '';
+  const bizEmail = bizGet('bizemail') || '';
+  const bizAddr = bizGet('bizaddress') || '';
 
   doc.setFont(FONT, 'bold');
   doc.setFontSize(15);
@@ -1601,17 +1633,18 @@ function printPdfDirect(doc) {
     app.innerHTML = renderActivateLicense();
     return;
   }
+  try { localStorage.setItem('salesstock_bizname', bizCustomName()); } catch (e) {}
   const lowStock = getLowStock();
   const showAlert = lowStock.length > 0 && !state.alertDismissed;
   app.innerHTML = `
     <div class="app">
       <div class="topbar">
         <button class="menu-btn" onclick="toggleMenu()" aria-label="Abrir menú">☰</button>
-        <div class="topbar-title">${escapeHtml(localStorage.getItem('salesstock_bizname') || 'SalesStock Pro')}</div>
+        <div class="topbar-title">${escapeHtml(bizCustomName() || DEFAULT_BRAND)}</div>
       </div>
       <div class="menu-backdrop" onclick="toggleMenu()"></div>
       <div class="sidebar">
-        <div class="logo">${(localStorage.getItem('salesstock_bizname') || 'SalesStock').split(' ')[0]}<span>Pro</span></div>
+        <div class="logo" style="overflow-wrap:anywhere;line-height:1.15;font-size:${bizCustomName().length > 24 ? 16 : bizCustomName().length > 14 ? 19 : 24}px">${brandHtml(bizCustomName())}</div>
         <nav class="nav">
           <div class="nav-link ${state.page === 'sales' ? 'active' : ''}" onclick="state.page='sales';state.testResult='';render()">💰 Punto de Venta</div>
            <div class="nav-link ${state.page === 'fiados' ? 'active' : ''}" onclick="state.page='fiados';state.testResult='';render()">💳 Creditos</div>
@@ -1740,7 +1773,7 @@ function renderLogin() {
     <div class="login-container">
       <div class="login-card">
         <div class="login-logo">
-          <h1>${(localStorage.getItem('salesstock_bizname') || 'SalesStock').split(' ')[0]}<span>Pro</span></h1>
+          <h1>${brandHtml(cachedBizName())}</h1>
           <p>Sistema de Gestión de Ventas e Inventario</p>
         </div>
         ${tabs}
@@ -1755,7 +1788,7 @@ function renderActivateLicense() {
     <div class="login-container">
       <div class="login-card">
         <div class="login-logo">
-          <h1>${(localStorage.getItem('salesstock_bizname') || 'SalesStock').split(' ')[0]}<span>Pro</span></h1>
+          <h1>${brandHtml(cachedBizName())}</h1>
           <p>Activar Licencia</p>
         </div>
         ${state.loginError ? '<div style="background:#fee2e2;color:#dc2626;padding:12px;border-radius:8px;margin-bottom:15px;text-align:center;font-weight:600">' + state.loginError + '</div>' : ''}
@@ -1895,7 +1928,7 @@ function printFiadoReceipt(fiado) {
 
   doc.setFont('helvetica', 'bold');
   doc.setFontSize(14);
-  doc.text((localStorage.getItem('salesstock_bizname') || 'SalesStock Pro').toUpperCase(), 40, y, { align: 'center' });
+  doc.text((bizGet('bizname') || 'SalesStock Pro').toUpperCase(), 40, y, { align: 'center' });
   y += 6;
   doc.setFont('helvetica', 'normal');
   doc.setFontSize(9);
@@ -2291,11 +2324,11 @@ function printFiadoInvoice(fiadoId) {
 function buildFiadoDocument(fiado) {
   const doc = new jsPDF({ unit: 'mm', format: [PAGE_W, pdfCalcInvoiceHeight(fiado)] });
   let y = MARGIN_X;
-  const bizName = localStorage.getItem('salesstock_bizname') || 'SALESSTOCK PRO';
-  const bizRnc = localStorage.getItem('salesstock_bizrnc') || '';
-  const bizPhone = localStorage.getItem('salesstock_bizphone') || '';
-  const bizEmail = localStorage.getItem('salesstock_bizemail') || '';
-  const bizAddr = localStorage.getItem('salesstock_bizaddress') || '';
+  const bizName = bizGet('bizname') || 'SALESSTOCK PRO';
+  const bizRnc = bizGet('bizrnc') || '';
+  const bizPhone = bizGet('bizphone') || '';
+  const bizEmail = bizGet('bizemail') || '';
+  const bizAddr = bizGet('bizaddress') || '';
 
   doc.setFont(FONT, 'bold');
   doc.setFontSize(15);
@@ -2632,11 +2665,11 @@ function buildSalesListHtml(sales) {
 }
 
 function renderSaleInvoiceHtml(sale) {
-  const bizName = localStorage.getItem('salesstock_bizname') || 'SALESSTOCK PRO';
-  const bizRnc = localStorage.getItem('salesstock_bizrnc') || '';
-  const bizPhone = localStorage.getItem('salesstock_bizphone') || '';
-  const bizEmail = localStorage.getItem('salesstock_bizemail') || '';
-  const bizAddr = localStorage.getItem('salesstock_bizaddress') || '';
+  const bizName = bizGet('bizname') || 'SALESSTOCK PRO';
+  const bizRnc = bizGet('bizrnc') || '';
+  const bizPhone = bizGet('bizphone') || '';
+  const bizEmail = bizGet('bizemail') || '';
+  const bizAddr = bizGet('bizaddress') || '';
 
   const itemsHtml = sale.items.map(item => `
     <tr>
@@ -2721,19 +2754,20 @@ function renderSaleInvoiceHtml(sale) {
   `;
 }
 
-function renderProducts() {
-  const products = getProducts();
-  let searchTimer = null;
+let productSearchTimer = null;
 function onProductSearch(v) {
   state.search = v;
-  clearTimeout(searchTimer);
-  searchTimer = setTimeout(() => {
+  clearTimeout(productSearchTimer);
+  productSearchTimer = setTimeout(() => {
     render();
     const i = document.querySelector('.search-input');
     if (i) { i.focus(); i.setSelectionRange(v.length, v.length); }
   }, 150);
 }
 window.onProductSearch = onProductSearch;
+
+function renderProducts() {
+  const products = getProducts();
   return `
     <div class="header"><h1>Productos</h1><button class="btn btn-primary" onclick="state.modal={type:'product'};render()">+ Nuevo Producto</button></div>
     <div class="card" style="background:#1e293b;color:#fff;padding:20px;margin-bottom:20px">
@@ -2744,11 +2778,10 @@ window.onProductSearch = onProductSearch;
       </div>
     </div>
     <div class="search">
-      <input class="search-input" placeholder="Buscar productos..." value="${state.search}" oninput="state.search=this.value;render()">
+      <input class="search-input" placeholder="Buscar productos..." value="${escapeHtml(state.search)}" oninput="onProductSearch(this.value)">
     </div>
     <div class="card">
       <table>
-      <input class="search-input" placeholder="Buscar productos..." value="${escapeHtml(state.search)}" oninput="onProductSearch(this.value)">  
       <thead><tr><th>Nombre</th><th>Precio</th><th>Stock</th><th>Mín.</th><th>Barcode</th><th>Acciones</th></tr></thead>
         <tbody>
           ${products.length ? products.map(p=>`
@@ -3055,50 +3088,40 @@ function generateLicense() {
   render();
 }
 
-function deleteLicense(key) {
-  console.log('deleteLicense called with key:', key);
-  if (!confirm('¿Eliminar licencia ' + key + '?\n\nEsto eliminará también el usuario, productos, ventas y créditos asociados a esta licencia.')) return;
+async function deleteLicense(key) {
   const licenses = DB.get('licenses');
-  console.log('licenses:', licenses);
   const license = licenses.find(l => l.key === key);
-  console.log('license found:', license);
   if (!license) return;
-  
-  if (license.used && license.usedBy) {
-    const targetUserId = String(license.usedBy);
-    const users = DB.get('users');
-    const targetUser = users.find(u => String(u.id) === targetUserId);
-    const companyId = license.companyId || targetUserId;
-    
-    if (targetUser) {
-      const usersToDelete = new Set([targetUserId]);
-      const findSubUsers = (userId) => {
-        users.forEach(u => {
-          if (String(u.createdBy) === String(userId) && !usersToDelete.has(String(u.id))) {
-            usersToDelete.add(String(u.id));
-            findSubUsers(String(u.id));
-          }
-        });
-      };
-      findSubUsers(targetUserId);
-      
-      const products = DB.get('products').filter(p => !(usersToDelete.has(String(p.createdBy)) && String(p.companyId) === companyId));
-      let sales = DB.get('sales').filter(s => !(usersToDelete.has(String(s.userId || s.user)) && String(s.companyId) === companyId));
-      let fiados = DB.get('fiados').filter(f => !(usersToDelete.has(String(f.userId || f.user)) && String(f.companyId) === companyId));
-      
-      const remainingUsers = users.filter(u => !usersToDelete.has(String(u.id)));
-      
-      DB.set('users', remainingUsers);
-      DB.set('products', products);
-      DB.set('sales', sales);
-      DB.set('fiados', fiados);
-      usersToDelete.forEach(uid => { window.FB_DB.collection('profiles').doc(String(uid)).delete().catch(() => {}); });
-      console.log('deleted users:', usersToDelete);
+
+  // Empresa asociada a la licencia (solo si ya fue usada). Nunca la de Sistemapro ('1').
+  let companyId = '';
+  if (license.used) {
+    companyId = String(license.companyId && String(license.companyId) !== '1' ? license.companyId : (license.usedBy || ''));
+    if (companyId === '1') companyId = '';
+  }
+
+  const message = companyId
+    ? '¿Eliminar la licencia ' + key + '?\n\nSe borrarán PERMANENTEMENTE todos los datos de esta empresa: usuarios, productos, ventas, facturas y créditos.\n\nEsta acción no se puede deshacer.'
+    : '¿Eliminar la licencia ' + key + '?';
+  const ok = await showConfirm(message, {
+    title: 'Eliminar licencia',
+    icon: '🗑️',
+    confirmText: 'Eliminar',
+    danger: true
+  });
+  if (!ok) return;
+
+  if (companyId) {
+    try {
+      await window.App.Services.DB.deleteCompany(companyId);
+    } catch (e) {
+      console.error('[deleteLicense]', e);
+      alert('No se pudieron eliminar los datos de la empresa.\nMotivo: ' + ((e && (e.code || e.message)) || 'desconocido') + '\nLa licencia no fue eliminada.');
+      return;
     }
   }
-  
-  const updatedLicenses = licenses.filter(l => l.key !== key);
-  DB.set('licenses', updatedLicenses);
+
+  await DB.set('licenses', DB.get('licenses').filter(l => l.key !== key));
   render();
 }
 
@@ -3157,18 +3180,24 @@ function updateCompanyStatus() {
   if (!box) return;
   const values = readCompanyForm();
   const dirty = COMPANY_FIELDS.some(f =>
-    String(values[f.id]).trim() !== (localStorage.getItem(f.key) || f.def || '').trim()
+    String(values[f.id]).trim() !== (bizGet(f.id) || f.def || '').trim()
   );
   box.innerHTML = companyStatusHtml(values, dirty);
   const btn = document.getElementById('empresa-save');
   if (btn) btn.classList.toggle('pulse', dirty);
 }
 
-function saveCompanyData() {
+async function saveCompanyData() {
+  const cid = getCompanyId() || '1';
+  const entry = { companyId: cid };
   COMPANY_FIELDS.forEach(f => {
     const el = document.getElementById(f.id);
-    if (el) localStorage.setItem(f.key, el.value.trim());
+    entry[f.id] = el ? el.value.trim() : bizGet(f.id);
   });
+  const list = DB.get('settings').filter(s => String(s.companyId) !== cid);
+  list.push(entry);
+  const res = await DB.set('settings', list);
+  if (res === null) return; // db.js ya mostró el motivo del error
   alert('Datos de la empresa guardados');
   render(); // actualiza el logo del menú y el estado
 }
@@ -3177,7 +3206,7 @@ function renderUsers() {
   if (state.user.role !== 'ADMIN') return '<div class="empty">Acceso denegado</div>';
   const users = getVisibleUsers();
   const saved = {};
-  COMPANY_FIELDS.forEach(f => { saved[f.id] = localStorage.getItem(f.key) || f.def || ''; });
+  COMPANY_FIELDS.forEach(f => { saved[f.id] = bizGet(f.id) || f.def || ''; });
 
   return `
     <div class="header"><h1>Usuarios</h1><button class="btn btn-primary" onclick="state.modal={type:'user'};render()">+ Nuevo</button></div>
@@ -3350,7 +3379,7 @@ function renderModal() {
                 <option value="normal" ${m.receiptType === 'normal' ? 'selected' : ''}>💵 Comprobante Normal</option>
                 <option value="fiscal" ${m.receiptType === 'fiscal' ? 'selected' : ''}>🧾 Comprobante Fiscal</option>
               </select>
-              ${m.receiptType === 'fiscal' ? `<div class="receipt-rnc-display" style="margin-top:10px">RNC: ${localStorage.getItem('salesstock_bizrnc') || '<span style="color:#94a3b8">Sin RNC configurado</span>'}</div>` : ''}
+              ${m.receiptType === 'fiscal' ? `<div class="receipt-rnc-display" style="margin-top:10px">RNC: ${bizGet('bizrnc') || '<span style="color:#94a3b8">Sin RNC configurado</span>'}</div>` : ''}
             </div>
 
             ${m.paymentMode === 'sale' ? `
@@ -3534,15 +3563,15 @@ function exportPDF(dateStr) {
 
   const money = (v) => 'RD$ ' + Number(v || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
-  const bizName = (localStorage.getItem('salesstock_bizname') || 'SalesStock Pro').trim();
-  const bizRnc = localStorage.getItem('salesstock_bizrnc') || '';
-  const bizPhone = localStorage.getItem('salesstock_bizphone') || '';
-  const bizEmail = localStorage.getItem('salesstock_bizemail') || '';
-  const bizAddr = localStorage.getItem('salesstock_bizaddress') || '';
-  const logoWord = bizName.split(' ')[0] || 'SalesStock';
+  const customName = bizCustomName();
+  const bizName = (customName || DEFAULT_BRAND).trim();
+  const bizRnc = bizGet('bizrnc') || '';
+  const bizPhone = bizGet('bizphone') || '';
+  const bizEmail = bizGet('bizemail') || '';
+  const bizAddr = bizGet('bizaddress') || '';
+  const logoWord = customName || 'SalesStock';
  const reportDate = dateStr ? fmtDateStr(dateStr) : fmtDateStr(localDateStr(new Date()));
-// y al final:
-doc.save('reporte-' + (dateStr || localDateStr(new Date())) + '.pdf');const generatedBy = state.user ? state.user.username : 'Sistema';
+const generatedBy = state.user ? state.user.username : 'Sistema';
 
   const doc = new jsPDF({ unit: 'mm', format: 'a4' });
   const PW = 210, PH = 297, M = 12, IW = PW - M * 2;
@@ -3554,12 +3583,20 @@ doc.save('reporte-' + (dateStr || localDateStr(new Date())) + '.pdf');const gene
   doc.rect(0, 0, PW, 34, 'F');
 
   doc.setFont(FONT, 'bold');
-  doc.setFontSize(22);
-  const w1 = doc.getTextWidth(logoWord);
+  let repLogoSize = 22;
+  doc.setFontSize(repLogoSize);
+  while (repLogoSize > 11 && doc.getTextWidth(logoWord + (customName ? '' : 'Pro')) > 105) {
+    repLogoSize -= 1;
+    doc.setFontSize(repLogoSize);
+  }
+  const logoShown = customName ? abbreviateText(doc, logoWord, 105) : logoWord;
+  const w1 = doc.getTextWidth(logoShown);
   doc.setTextColor(...BLUE);
-  doc.text(logoWord, M, 15);
-  doc.setTextColor(...WHITE);
-  doc.text('Pro', M + w1, 15);
+  doc.text(logoShown, M, 15);
+  if (!customName) {
+    doc.setTextColor(...WHITE);
+    doc.text('Pro', M + w1, 15);
+  }
 
   doc.setFont(FONT, 'normal');
   doc.setFontSize(8);
@@ -3791,8 +3828,9 @@ function generateLabelPDF(products) {
   const WHITE = [255, 255, 255];
 
   // Logo igual al del menú lateral: primera palabra en azul + "Pro" en blanco
-  const bizFull = (localStorage.getItem('salesstock_bizname') || 'SalesStock Pro').trim();
-  const logoWord = bizFull.split(' ')[0] || 'SalesStock';
+  const labelCustom = bizCustomName();
+  const logoWord = labelCustom || 'SalesStock';
+  const proSuffix = labelCustom ? '' : 'Pro';
 
   let col = 0, row = 0;
 
@@ -3821,17 +3859,20 @@ function generateLabelPDF(products) {
     let logoSize = 13;
     doc.setFont('helvetica', 'bold');
     doc.setFontSize(logoSize);
-    while (logoSize > 8 && doc.getTextWidth(logoWord + 'Pro') > W - 10) {
+    while (logoSize > 8 && doc.getTextWidth(logoWord + proSuffix) > W - 10) {
       logoSize -= 0.5;
       doc.setFontSize(logoSize);
     }
-    const w1 = doc.getTextWidth(logoWord);
-    const w2 = doc.getTextWidth('Pro');
+    const logoShown = proSuffix ? logoWord : abbreviateText(doc, logoWord, W - 10);
+    const w1 = doc.getTextWidth(logoShown);
+    const w2 = doc.getTextWidth(proSuffix);
     const logoX = cx - (w1 + w2) / 2;
     doc.setTextColor(...BLUE);
-    doc.text(logoWord, logoX, y + 8.2);
-    doc.setTextColor(...WHITE);
-    doc.text('Pro', logoX + w1, y + 8.2);
+    doc.text(logoShown, logoX, y + 8.2);
+    if (proSuffix) {
+      doc.setTextColor(...WHITE);
+      doc.text(proSuffix, logoX + w1, y + 8.2);
+    }
 
     // ----- Nombre del producto (máx. 2 líneas) -----
     doc.setTextColor(...DARK);
