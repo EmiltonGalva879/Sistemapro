@@ -161,22 +161,35 @@ let state = {
   reportDate: localDateStr(new Date()),
 };
 
-const SUPER_EMAIL = "sistemapro@sistema.local";
+// Cambia este texto cada vez que publiques: aparece al pie del login y en la consola,
+// y sirve para comprobar qué versión está sirviendo realmente Vercel / Electron.
+const APP_VERSION = "2026.10.20-recuperacion";
+console.info("[SalesStock Pro] versión", APP_VERSION);
+
 let sessionLoading = false; // evita que onAuthStateChanged interfiera mientras se registra una cuenta
 
-function authEmail(username) {
-  return (
-    String(username || "")
-      .trim()
-      .toLowerCase() + "@sistema.local"
-  );
+// Acepta un correo real o un nombre de usuario (cuentas antiguas: usuario@sistema.local)
+function authEmail(identifier) {
+  const v = String(identifier || "")
+    .trim()
+    .toLowerCase();
+  return v.includes("@") ? v : v + "emiltongalva879@gmail.com";
+}
+
+function isValidEmail(email) {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(String(email || "").trim());
+}
+
+// Correo "real": uno que puede recibir mensajes (no el interno @sistema.local)
+function isRealEmail(email) {
+  return isValidEmail(email) && !/@sistema\.local$/i.test(String(email).trim());
 }
 
 // Carga el perfil de la sesión de Firebase y decide a qué pantalla ir
 async function loadSession(fbUser) {
   const email = (fbUser.email || "").toLowerCase();
 
-  if (email === SUPER_EMAIL) {
+  if (window.isSuperAuthUser(fbUser)) {
     await ensureDB();
     state.user = {
       id: "1",
@@ -208,6 +221,13 @@ async function loadSession(fbUser) {
 
   const profile = snap.data();
   await ensureDB(profile.companyId);
+  // Si la persona cambió su correo (ya verificado), el perfil se actualiza solo
+  if (fbUser.emailVerified && email && profile.email !== email) {
+    window.FB_DB.collection("profiles")
+      .doc(fbUser.uid)
+      .update({ email: email })
+      .catch(() => {});
+  }
   const entry =
     window.App.Services.DB.get("users").find(
       (u) => String(u.id) === fbUser.uid,
@@ -290,7 +310,7 @@ async function claimLicense(uid, username, email, key) {
 async function login(username, password) {
   username = (username || "").trim();
   if (!username || !password) {
-    state.loginError = "Usuario y contraseña son obligatorios";
+    state.loginError = "Escribe tu usuario o correo y tu contraseña";
     render();
     return false;
   }
@@ -324,11 +344,19 @@ async function validateRegisterLicense(key) {
   render();
 }
 
-async function registerUser(username, password, confirmPassword) {
+async function registerUser(username, email, password, confirmPassword) {
   const licenseKey = state.registerLicenseKey || "";
   username = (username || "").trim();
-  if (!username || !password) {
-    state.loginError = "Usuario y contraseña son obligatorios";
+  email = String(email || "")
+    .trim()
+    .toLowerCase();
+  if (!username || !email || !password) {
+    state.loginError = "Usuario, correo y contraseña son obligatorios";
+    render();
+    return false;
+  }
+  if (!isRealEmail(email)) {
+    state.loginError = "Escribe un correo válido (por ejemplo nombre@gmail.com)";
     render();
     return false;
   }
@@ -359,15 +387,10 @@ async function registerUser(username, password, confirmPassword) {
   try {
     state.loginError = "";
     cred = await window.FB_AUTH.createUserWithEmailAndPassword(
-      authEmail(username),
+      email,
       password,
     );
-    await claimLicense(
-      cred.user.uid,
-      username,
-      authEmail(username),
-      licenseKey,
-    );
+    await claimLicense(cred.user.uid, username, email, licenseKey);
   } catch (e) {
     // Si la licencia no sirvió, no se deja la cuenta creada a medias
     if (cred && cred.user) {
@@ -379,6 +402,14 @@ async function registerUser(username, password, confirmPassword) {
     state.loginError = mapAuthError(e);
     render();
     return false;
+  }
+
+  // Correo de verificación (no bloquea el registro si falla)
+  try {
+    window.FB_AUTH.languageCode = "es";
+    await cred.user.sendEmailVerification();
+  } catch (e) {
+    console.warn("No se pudo enviar el correo de verificación", e && e.code);
   }
 
   try {
@@ -401,7 +432,9 @@ async function registerUser(username, password, confirmPassword) {
 
 function mapAuthError(e) {
   const code = e && e.code;
-  if (code === "auth/invalid-email") return "Correo inválido";
+  if (code === "auth/invalid-email") return "Correo o usuario inválido";
+  if (code === "auth/requires-recent-login")
+    return "Por seguridad, cierra sesión, vuelve a entrar e inténtalo de nuevo";
   if (
     code === "auth/user-not-found" ||
     code === "auth/wrong-password" ||
@@ -409,27 +442,30 @@ function mapAuthError(e) {
   )
     return "Credenciales incorrectas";
   if (code === "auth/email-already-in-use")
-    return "Ese nombre de usuario ya está registrado";
+    return "Ese correo o usuario ya está registrado";
   if (code === "auth/too-many-requests")
     return "Demasiados intentos. Espera unos minutos e inténtalo de nuevo";
   if (code === "auth/network-request-failed")
     return "Error de conexión. Verifica tu internet";
   if (code === "auth/weak-password")
-    return "La contraseña es muy débil (mínimo 6 caracteres)";
+    return "La contraseña es muy débil (mínimo 8 caracteres)";
   return e && e.message ? e.message : "Error de autenticación";
 }
 
 async function logout() {
   if (window.isDirty && state.cart.length > 0) {
-    if (
-      !confirm(
-        "⚠️ Tienes " +
-          state.cart.length +
-          " producto(s) en el carrito.\n\n¿Seguro que quieres cerrar sesión?",
-         
-        )
-    )
-      return;
+    const ok = await showConfirm(
+      "Tienes " +
+        state.cart.length +
+        " producto(s) en el carrito.\n\n¿Seguro que quieres cerrar sesión?",
+      {
+        title: "Cerrar sesión",
+        icon: "⚠️",
+        confirmText: "Cerrar sesión",
+        danger: true,
+      },
+    );
+    if (!ok) return;
   }
   try {
     await window.App.Services.FirebaseAuth.logout();
@@ -485,6 +521,221 @@ async function activateLicense(key) {
     render();
     return false;
   }
+}
+
+// ===== Recuperación de cuenta =====
+
+// Aviso (ocultable) para cuentas sin correo real o con el correo sin verificar
+function renderAccountBanner() {
+  if (window._acctBannerHidden) return "";
+  const u = window.FB_AUTH && window.FB_AUTH.currentUser;
+  if (!u || !u.email) return "";
+  const email = u.email.toLowerCase();
+  const box = (icon, text, buttons) => `
+    <div class="acct-banner" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;background:#fffbeb;border:1px solid #fde68a;color:#92400e;padding:12px 14px;border-radius:10px;margin-bottom:16px;font-size:14px;text-align:left">
+      <span style="font-size:20px">${icon}</span>
+      <div style="flex:1;min-width:200px;line-height:1.45">${text}</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">${buttons}</div>
+      <button type="button" class="btn btn-secondary btn-sm" onclick="window._acctBannerHidden=true;render()" aria-label="Ocultar aviso">✕</button>
+    </div>`;
+  if (!isRealEmail(email)) {
+    return box(
+      "🔐",
+      "<strong>Protege tu cuenta:</strong> registra un correo real para poder recuperar tu contraseña si la olvidas.",
+      '<button type="button" class="btn btn-primary btn-sm" onclick="showRecoveryEmailModal()">Registrar correo</button>',
+    );
+  }
+  if (!u.emailVerified) {
+    return box(
+      "📧",
+      "<strong>Verifica tu correo:</strong> te enviamos un enlace a " +
+        escapeHtml(email) +
+        ". Ábrelo y luego pulsa «Ya lo verifiqué».",
+      '<button type="button" class="btn btn-secondary btn-sm" onclick="resendVerification()">Reenviar enlace</button>' +
+        '<button type="button" class="btn btn-primary btn-sm" onclick="refreshVerification()">Ya lo verifiqué</button>',
+    );
+  }
+  return "";
+}
+
+async function resendVerification() {
+  try {
+    await window.App.Services.FirebaseAuth.sendVerification();
+    alert("Te enviamos un nuevo enlace de verificación a tu correo.");
+  } catch (e) {
+    alert(mapAuthError(e));
+  }
+}
+
+async function refreshVerification() {
+  try {
+    const u = await window.App.Services.FirebaseAuth.refreshUser();
+    if (u && u.emailVerified) {
+      try {
+        await loadSession(u);
+      } catch (e) {
+        console.warn("[verificación] No se pudo recargar la sesión", e);
+      }
+      alert("¡Correo verificado!");
+    } else {
+      alert(
+        "No se pudo confirmar todavía. Abre el enlace que te enviamos al correo y vuelve a intentarlo.",
+      );
+    }
+  } catch (e) {
+    alert(mapAuthError(e));
+  }
+  render();
+}
+
+// Ventana para cambiar el correo de la cuenta (conserva UID, licencia, empresa y datos)
+function showRecoveryEmailModal() {
+  const isSuper = state.user && String(state.user.id) === "1";
+  const overlay = document.createElement("div");
+  overlay.className = "modal-overlay";
+  overlay.style.padding = "16px";
+  overlay.style.zIndex = "1500";
+  overlay.innerHTML = `
+    <div class="modal" style="max-width:440px">
+      <div class="modal-header">
+        <h2 class="modal-title">🔐 Registrar correo de recuperación</h2>
+        <button type="button" class="btn btn-secondary" data-action="close" aria-label="Cerrar">✕</button>
+      </div>
+      <form data-role="form" autocomplete="off">
+        <div class="modal-body">
+          <p style="color:#64748b;font-size:14px;line-height:1.5;margin-bottom:14px">
+            Te enviaremos un enlace para confirmar el correo. Cuando lo abras, tu cuenta usará ese correo para entrar y para recuperar la contraseña. No pierdes tu licencia, usuarios ni datos.
+          </p>
+          <div data-role="err" style="display:none;background:#fee2e2;color:#dc2626;padding:10px 12px;border-radius:8px;margin-bottom:12px;font-weight:600;font-size:14px"></div>
+          <div class="form-group">
+            <label for="rec-email">Correo</label>
+            <input id="rec-email" class="form-control" type="email" inputmode="email" autocomplete="email" placeholder="nombre@gmail.com" required>
+          </div>
+          <div class="form-group">
+            <label for="rec-pass">Tu contraseña actual</label>
+            <input id="rec-pass" class="form-control" type="password" autocomplete="current-password" required>
+          </div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-action="close">Cancelar</button>
+          <button type="submit" class="btn btn-primary" data-role="submit">Enviar enlace</button>
+        </div>
+      </form>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  const form = overlay.querySelector('[data-role="form"]');
+  const errBox = overlay.querySelector('[data-role="err"]');
+  const emailInput = overlay.querySelector("#rec-email");
+  const passInput = overlay.querySelector("#rec-pass");
+  const submitBtn = overlay.querySelector('[data-role="submit"]');
+
+  function close() {
+    document.removeEventListener("keydown", onKey, true);
+    overlay.remove();
+  }
+  function onKey(e) {
+    if (e.key === "Escape") {
+      e.stopPropagation();
+      close();
+    }
+  }
+  function showError(msg) {
+    errBox.textContent = msg;
+    errBox.style.display = "block";
+  }
+
+  overlay.querySelectorAll('[data-action="close"]').forEach((b) => b.addEventListener("click", close));
+  overlay.addEventListener("click", (e) => {
+    if (e.target === overlay) close();
+  });
+  document.addEventListener("keydown", onKey, true);
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    errBox.style.display = "none";
+    const email = emailInput.value.trim().toLowerCase();
+    const password = passInput.value;
+    if (!isRealEmail(email)) return showError("Escribe un correo válido (por ejemplo nombre@gmail.com)");
+    if (!password) return showError("Escribe tu contraseña actual");
+
+    if (isSuper) {
+      // Evita que un error de escritura deje al administrador sin acceso
+      if (!window.SUPER_REAL_EMAIL)
+        return showError("Primero escribe tu correo en js/services/db.js (DB_SUPER_REAL_EMAIL) y en firestore.rules, y vuelve a publicar.");
+      if (email !== window.SUPER_REAL_EMAIL)
+        return showError("Para el administrador principal el correo debe ser exactamente: " + window.SUPER_REAL_EMAIL);
+    }
+
+    submitBtn.disabled = true;
+    submitBtn.textContent = "Enviando...";
+    try {
+      await window.App.Services.FirebaseAuth.startEmailChange(email, password);
+      overlay.querySelector(".modal-body").innerHTML = '<p data-role="done" style="line-height:1.55;font-size:15px"></p>';
+      overlay.querySelector('[data-role="done"]').textContent =
+        "Enviamos un enlace a " + email + ". Ábrelo para confirmar el cambio. Después, entra al sistema con ese correo (y tu misma contraseña).";
+      overlay.querySelector(".modal-footer").innerHTML = '<button type="button" class="btn btn-primary" data-action="close">Entendido</button>';
+      overlay.querySelectorAll('[data-action="close"]').forEach((b) => b.addEventListener("click", close));
+    } catch (err) {
+      console.error("[correo] No se pudo iniciar el cambio:", err && err.code);
+      submitBtn.disabled = false;
+      submitBtn.textContent = "Enviar enlace";
+      showError(
+        err && (err.code === "auth/wrong-password" || err.code === "auth/invalid-credential")
+          ? "La contraseña actual no es correcta"
+          : mapAuthError(err),
+      );
+    }
+  });
+
+  emailInput.focus();
+}
+
+// Pantalla "¿Olvidaste tu contraseña o usuario?" del login
+function startForgot() {
+  state.loginTab = "forgot";
+  state.loginError = "";
+  state.forgotMsg = "";
+  render();
+}
+
+async function sendResetEmail(email) {
+  email = String(email || "")
+    .trim()
+    .toLowerCase();
+  state.forgotEmail = email;
+  state.loginError = "";
+  state.forgotMsg = "";
+  if (!isValidEmail(email)) {
+    state.loginError = "Escribe un correo válido";
+    render();
+    return false;
+  }
+  if (Date.now() < (state.forgotUntil || 0)) {
+    state.loginError = "Espera unos segundos antes de pedir otro enlace";
+    render();
+    return false;
+  }
+  state.forgotBusy = true;
+  render();
+  try {
+    await window.App.Services.FirebaseAuth.sendPasswordReset(email);
+    // Mensaje igual exista o no el correo: no se revela qué correos están registrados
+    state.forgotMsg =
+      "Si ese correo está registrado, te enviamos un enlace para crear una contraseña nueva. Revisa tu bandeja de entrada y la carpeta de spam.";
+    state.forgotUntil = Date.now() + 30000;
+    setTimeout(() => {
+      if (state.loginTab === "forgot") render();
+    }, 30500);
+  } catch (e) {
+    console.error("[recuperación] No se pudo enviar el enlace:", e && e.code);
+    state.loginError = mapAuthError(e);
+  } finally {
+    state.forgotBusy = false;
+    render();
+  }
+  return true;
 }
 
 function getCompanyId() {
@@ -707,7 +958,7 @@ async function promptDeleteSale(id) {
     return;
   }
 
-  deleteSale(id);
+  await deleteSale(id);
 }
 
 function requestAdminPassword() {
@@ -790,11 +1041,17 @@ function requestAdminPassword() {
   });
 }
 
-function deleteSale(id) {
+async function deleteSale(id) {
   const sales = getVisibleSales();
   const sale = sales.find((s) => s.id === id);
   if (!sale) return;
-  if (!confirm("¿Eliminar venta #" + id + "?")) return;
+  const ok = await showConfirm("¿Eliminar venta #" + id + "?", {
+    title: "Eliminar venta",
+    icon: "🗑️",
+    confirmText: "Eliminar",
+    danger: true,
+  });
+  if (!ok) return;
   const products = getProducts();
   const visibleOwners = getVisibleOwners(state.user.id);
   sale.items.forEach((item) => {
@@ -817,6 +1074,7 @@ function deleteSale(id) {
     (DB.get("sales_normal") || []).filter((s) => s.id !== id),
   );
   alert("Venta eliminada");
+  state.salesListHtml = "";
   render();
 }
 
@@ -861,9 +1119,16 @@ function getCartTotal() {
   return subtotal;
 }
 
-function cancelCart() {
+async function cancelCart() {
   if (state.cart.length === 0) return;
-  if (!confirm("¿Cancelar todo el carrito?")) return;
+  const ok = await showConfirm("¿Cancelar todo el carrito?", {
+    title: "Cancelar carrito",
+    icon: "🛒",
+    confirmText: "Sí, cancelar",
+    cancelText: "No",
+    danger: true,
+  });
+  if (!ok) return;
   state.cart = [];
   render();
 }
@@ -1305,10 +1570,19 @@ async function saveUser(user) {
         return false;
       }
 
-      const email = authEmail(username);
+      // Correo opcional: con correo real la persona entra con él y puede recuperar su contraseña
+      let email = String(user.email || "")
+        .trim()
+        .toLowerCase();
+      if (email && !isRealEmail(email)) {
+        alert("Escribe un correo válido o deja el campo vacío");
+        return false;
+      }
+      if (!email) email = authEmail(username);
       const uid = await window.App.Services.FirebaseAuth.createUserNoSwitch(
         email,
         user.password,
+        { sendVerification: isRealEmail(email) },
       );
       const role = user.role === "ADMIN" ? "ADMIN" : "USER";
       const companyId = String(state.user.companyId || state.user.id);
@@ -2151,6 +2425,7 @@ function render() {
         <button class="btn btn-secondary" style="width:100%;margin-top:12px" onclick="logout()">Cerrar Sesión</button>
       </div>
       <main class="main ${showAlert ? "main-with-alert" : ""}">
+        ${renderAccountBanner()}
         ${renderPage()}
       </main>
     </div>
@@ -2212,28 +2487,55 @@ function renderLogin() {
     <form onsubmit="event.preventDefault();login(this.u.value,this.p.value)">
       ${state.loginError ? '<div style="background:#fee2e2;color:#dc2626;padding:12px;border-radius:8px;margin-bottom:15px;text-align:center;font-weight:600">' + state.loginError + "</div>" : ""}
       <div class="form-group">
-        <label>Usuario</label>
-        <input class="form-control" name="u" type="text" placeholder="nombre de usuario" required>
+        <label>Usuario o correo</label>
+        <input class="form-control" name="u" type="text" autocomplete="username" placeholder="Usuario o Correo" required>
       </div>
       <div class="form-group">
         <label>Contraseña</label>
-        <input type="password" class="form-control" name="p" placeholder="Contraseña" required>
+        <input type="password" class="form-control" name="p" autocomplete="current-password" placeholder="Contraseña" required>
+      </div>
+      <div style="text-align:right;margin:-4px 0 14px">
+        <button type="button" onclick="startForgot()" style="background:none;border:none;padding:0;color:#2563eb;font-weight:600;font-size:13px;cursor:pointer;text-decoration:underline">¿Olvidaste tu contraseña o usuario?</button>
       </div>
       <button type="submit" class="btn btn-primary" style="width:100%">Iniciar Sesión</button>
     </form>
 `;
 
+  const forgotBlocked = state.forgotBusy || Date.now() < (state.forgotUntil || 0);
+  const forgotForm = `
+    <form onsubmit="event.preventDefault();sendResetEmail(this.fe.value)">
+      ${state.loginError ? '<div style="background:#fee2e2;color:#dc2626;padding:12px;border-radius:8px;margin-bottom:15px;text-align:center;font-weight:600">' + escapeHtml(state.loginError) + "</div>" : ""}
+      ${state.forgotMsg ? '<div style="background:#dcfce7;color:#166534;padding:12px;border-radius:8px;margin-bottom:15px;font-weight:600;font-size:14px;line-height:1.45">' + escapeHtml(state.forgotMsg) + "</div>" : ""}
+      <h2 style="font-size:18px;margin-bottom:6px">Recuperar acceso</h2>
+      <p style="color:#64748b;font-size:14px;line-height:1.5;margin-bottom:14px">Escribe el correo de tu cuenta y te enviaremos un enlace para crear una contraseña nueva.</p>
+      <div class="form-group">
+        <label>Correo</label>
+        <input class="form-control" name="fe" type="email" inputmode="email" autocomplete="email" placeholder="correo@ejemplo.com" value="${escapeHtml(state.forgotEmail || "")}" required>
+      </div>
+      <button type="submit" class="btn btn-primary" style="width:100%" ${forgotBlocked ? "disabled" : ""}>${state.forgotBusy ? "Enviando..." : "Enviar enlace"}</button>
+      <div style="background:#f0f9ff;border:1px solid #bae6fd;color:#0369a1;padding:10px 12px;border-radius:8px;margin-top:14px;font-size:13px;line-height:1.5">
+        <strong>¿Olvidaste tu usuario?</strong> Si ya registraste tu correo, entra con el correo en lugar del usuario. Si tu cuenta es antigua y nunca registraste un correo, pide ayuda a tu administrador.
+      </div>
+      <button type="button" class="btn btn-secondary" style="width:100%;margin-top:12px" onclick="state.loginTab='login';state.loginError='';state.forgotMsg='';render()">Volver al inicio de sesión</button>
+    </form>
+  `;
+
   const registerForm = state.registerLicenseOk
     ? `
-    <form onsubmit="event.preventDefault();registerUser(this.ru.value,this.rp.value,this.rp2.value)">
+    <form onsubmit="event.preventDefault();registerUser(this.ru.value,this.re.value,this.rp.value,this.rp2.value)">
       ${state.loginError ? '<div style="background:#fee2e2;color:#dc2626;padding:12px;border-radius:8px;margin-bottom:15px;text-align:center;font-weight:600">' + state.loginError + "</div>" : ""}
       <div class="form-group">
         <label>Usuario</label>
-        <input class="form-control" name="ru" type="text" placeholder="nombre de usuario" required>
+        <input class="form-control" name="ru" type="text" autocomplete="username" placeholder="nombre de usuario" required>
+      </div>
+      <div class="form-group">
+        <label>Correo personal</label>
+        <input class="form-control" name="re" type="email" inputmode="email" autocomplete="email" placeholder="correo@ejemplo.com" required>
+        <small style="display:block;color:#64748b;margin-top:4px">Con este correo entrarás y podrás recuperar tu contraseña. Te enviaremos un enlace para verificarlo.</small>
       </div>
       <div class="form-group">
         <label>Contraseña</label>
-        <input type="password" class="form-control" name="rp" placeholder="Mínimo 8 caracteres" minlength="8" required>
+        <input type="password" class="form-control" name="rp" autocomplete="new-password" placeholder="Mínimo 8 caracteres" minlength="8" required>
       </div>
       <div class="form-group">
         <label>Confirmar contraseña</label>
@@ -2264,8 +2566,9 @@ function renderLogin() {
           <h1>${brandHtml(cachedBizName())}</h1>
           <p>Sistema de Gestión de Ventas e Inventario</p>
         </div>
-        ${tabs}
-        ${state.loginTab === "register" ? registerForm : loginForm}
+        ${state.loginTab === "forgot" ? "" : tabs}
+        ${state.loginTab === "forgot" ? forgotForm : state.loginTab === "register" ? registerForm : loginForm}
+        <div style="margin-top:16px;text-align:center;font-size:11px;color:#94a3b8">Versión ${APP_VERSION}</div>
       </div>
     </div>
   `;
@@ -2279,6 +2582,7 @@ function renderActivateLicense() {
           <h1>${brandHtml(cachedBizName())}</h1>
           <p>Activar Licencia</p>
         </div>
+        ${renderAccountBanner()}
         ${state.loginError ? '<div style="background:#fee2e2;color:#dc2626;padding:12px;border-radius:8px;margin-bottom:15px;text-align:center;font-weight:600">' + state.loginError + "</div>" : ""}
         <p style="margin-bottom:20px;color:#64748b;text-align:center">Ingrese la clave de licencia de su empresa para activar todas las funciones.</p>
          <form onsubmit="event.preventDefault();activateLicense(this.lk.value)">
@@ -2632,21 +2936,25 @@ window.promptDeleteFiado = async function (id) {
     return;
   }
 
-  deleteFiado(id);
+  await deleteFiado(id);
 };
 
-function deleteFiado(id) {
+async function deleteFiado(id) {
   const fiados = getVisibleFiados();
   const fiado = fiados.find((f) => f.id === id);
   if (!fiado) return;
-  if (
-    !confirm(
-      "¿Eliminar credito de " +
-        (fiado.customerName || "Cliente") +
-        "? Esta acción no se puede deshacer.",
-    )
-  )
-    return;
+  const ok = await showConfirm(
+    "¿Eliminar el crédito de " +
+      (fiado.customerName || "Cliente") +
+      "?\n\nEsta acción no se puede deshacer.",
+    {
+      title: "Eliminar crédito",
+      icon: "🗑️",
+      confirmText: "Eliminar",
+      danger: true,
+    },
+  );
+  if (!ok) return;
   const products = getProducts();
   const visibleOwners = getVisibleOwners(state.user.id);
   fiado.items.forEach((item) => {
@@ -3246,7 +3554,7 @@ function buildSalesListHtml(sales) {
       <td>${s.receiptType === "fiscal" ? '<span style="color:#3b82f6;font-weight:600">Fiscal</span>' : '<span style="color:#64748b">Normal</span>'}</td>
       <td>
         <button class="btn btn-info btn-sm" onclick="previewSaleInvoice(${s.id}); state.salesListHtml=''; render();" title="Ver factura">👁️</button>
-        <button class="btn btn-danger btn-sm" onclick="if(confirm('¿Eliminar venta #${s.id}?')){promptDeleteSale(${s.id}); state.salesListHtml=''; render();}">🗑️</button>
+        <button class="btn btn-danger btn-sm" onclick="promptDeleteSale(${s.id})">🗑️</button>
       </td>
     </tr>
   `,
@@ -4142,9 +4450,10 @@ function renderModal() {
       <div class="modal-overlay" onclick="state.modal=null;render()">
         <div class="modal" onclick="event.stopPropagation()">
           <div class="modal-header"><h2 class="modal-title">${u.id ? "Editar" : "Nuevo"} Usuario</h2><button class="btn btn-secondary" onclick="state.modal=null;render()">✕</button></div>
-          <form onsubmit="event.preventDefault();saveUser({id:${u.id ? "'" + u.id + "'" : "null"},username:this.u.value,password:this.p?this.p.value:'',role:this.r.value}).then(ok=>{if(ok!==false){state.modal=null;render()}})">
+          <form onsubmit="event.preventDefault();saveUser({id:${u.id ? "'" + u.id + "'" : "null"},username:this.u.value,email:this.e?this.e.value:'',password:this.p?this.p.value:'',role:this.r.value}).then(ok=>{if(ok!==false){state.modal=null;render()}})">
             <div class="modal-body">
               <div class="form-group"><label>Usuario *</label><input class="form-control" name="u" value="${escapeHtml(u.username || "")}" ${u.id ? 'readonly style="background:#f1f5f9"' : ""} required></div>
+              ${!u.id ? `<div class="form-group"><label>Correo (opcional)</label><input class="form-control" name="e" type="email" autocomplete="off" placeholder="correo@ejemplo.com"><small style="display:block;color:#64748b;margin-top:4px">Si lo escribes, esta persona entrará con ese correo y podrá recuperar su contraseña. Si lo dejas vacío, entra con su usuario.</small></div>` : ""}
               ${!u.id ? `<div class="form-group"><label>Contraseña * (mínimo 8 caracteres)</label><input class="form-control" name="p" type="password" autocomplete="new-password" minlength="8" required></div>` : ""}
               <div class="form-group"><label>Rol</label><select class="form-control" name="r"><option value="USER" ${u.role === "USER" ? "selected" : ""}>Usuario</option><option value="ADMIN" ${u.role === "ADMIN" ? "selected" : ""}>Administrador</option></select></div>
             </div>
@@ -4895,9 +5204,10 @@ removeFromCart = function (id) {
 };
 
 const originalCancelCart = cancelCart;
-cancelCart = function () {
-  originalCancelCart();
-  window.isDirty = false;
+cancelCart = async function () {
+  await originalCancelCart();
+  // Solo se limpia la marca si el carrito realmente se vació (el usuario pudo decir "No")
+  if (!state.cart.length) window.isDirty = false;
 };
 
 const originalCompleteSale = completeSale;
@@ -4927,7 +5237,7 @@ window.addEventListener("beforeunload", (e) => {
   if (typeof firebase === "undefined" || !window.FB_DB) {
     state.loading = false;
     state.loginError =
-      "No se pudo cargar Firebase. Verifica tu conexión y firebase-config.js";
+      "Verifica tu conexión y Vuelva A Intentar";
     render();
     return;
   }

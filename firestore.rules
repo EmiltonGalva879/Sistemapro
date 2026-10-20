@@ -9,10 +9,16 @@ service cloud.firestore {
       return request.auth != null;
     }
 
-    // Administrador del sistema. Su cuenta (Sistemapro@sistema.local) debe crearse
-    // en Firebase Console > Authentication ANTES de publicar estas reglas.
+    // Administrador del sistema. Dos formas de entrar (las dos son la misma persona):
+    //  1) La cuenta histórica sistemapro@sistema.local.
+    //  2) Tu correo REAL, solo si Firebase lo tiene VERIFICADO.
+    // Correo real del administrador (debe ser el mismo que DB_SUPER_REAL_EMAIL en js/services/db.js).
     function isSuper() {
-      return signedIn() && request.auth.token.email == 'sistemapro@sistema.local';
+      return signedIn() && (
+        request.auth.token.email == 'sistemapro@sistema.local'
+        || (request.auth.token.email == 'emiltongalva879@gmail.com'
+            && request.auth.token.email_verified == true)
+      );
     }
 
     function profilePath(uid) {
@@ -76,7 +82,13 @@ service cloud.firestore {
         || (isCompanyAdmin(resource.data.companyId)
             && request.auth.uid != uid
             && request.resource.data.companyId == resource.data.companyId
-            && request.resource.data.role in ['ADMIN', 'USER']);
+            && request.resource.data.role in ['ADMIN', 'USER'])
+        // Cada persona solo puede sincronizar SU correo con el que Firebase ya verificó
+        || (signedIn()
+            && request.auth.uid == uid
+            && request.auth.token.email_verified == true
+            && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['email'])
+            && request.resource.data.email == request.auth.token.email);
 
       allow delete: if isSuper()
         || (isCompanyAdmin(resource.data.companyId) && request.auth.uid != uid);
