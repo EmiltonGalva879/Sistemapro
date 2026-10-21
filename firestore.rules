@@ -94,6 +94,34 @@ service cloud.firestore {
         || (isCompanyAdmin(resource.data.companyId) && request.auth.uid != uid);
     }
 
+    // ==================== NOMBRES DE USUARIO ====================
+    // usernames/{usuario en minúsculas} -> { uid, email, username }
+    // Sirve para entrar escribiendo el usuario en vez del correo. Se puede LEER un registro
+    // si se conoce el nombre exacto (así se descubre el correo asociado); no se puede listar.
+    // Cada persona solo crea/cambia el registro de SU propio usuario y SU propio correo.
+    match /usernames/{name} {
+      allow get: if true;
+      allow list: if isSuper();
+
+      allow create: if signedIn()
+        && request.resource.data.keys().hasOnly(['uid', 'email', 'username'])
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.email == request.auth.token.email
+        && request.resource.data.username is string
+        && request.resource.data.username.lower() == name
+        && hasProfile()
+        && myProfile().username.lower() == name;
+
+      allow update: if signedIn()
+        && resource.data.uid == request.auth.uid
+        && request.resource.data.keys().hasOnly(['uid', 'email', 'username'])
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.email == request.auth.token.email
+        && request.resource.data.username.lower() == name;
+
+      allow delete: if isSuper() || (signedIn() && resource.data.uid == request.auth.uid);
+    }
+
     // ==================== LICENCIAS ====================
 
     match /licenseKeys/{key} {

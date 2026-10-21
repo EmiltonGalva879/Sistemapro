@@ -173,7 +173,7 @@ function authEmail(identifier) {
   const v = String(identifier || "")
     .trim()
     .toLowerCase();
-  return v.includes("@") ? v : v + "emiltongalva879@gmail.com";
+  return v.includes("@") ? v : v + "@sistema.local";
 }
 
 function isValidEmail(email) {
@@ -183,6 +183,41 @@ function isValidEmail(email) {
 // Correo "real": uno que puede recibir mensajes (no el interno @sistema.local)
 function isRealEmail(email) {
   return isValidEmail(email) && !/@sistema\.local$/i.test(String(email).trim());
+}
+
+// Guarda "usuario -> correo" para poder entrar con el nombre de usuario aunque la cuenta use correo real.
+// Solo la propia persona puede crear/cambiar su registro (lo exigen las reglas de Firestore).
+async function syncUsernameMapping(fbUser, profile) {
+  const email = (fbUser.email || "").toLowerCase();
+  const name = String((profile && profile.username) || "")
+    .trim()
+    .toLowerCase();
+  if (!isRealEmail(email) || !/^[a-z0-9_]{3,30}$/.test(name)) return;
+  try {
+    const ref = window.FB_DB.collection("usernames").doc(name);
+    const snap = await ref.get();
+    if (snap.exists) {
+      const d = snap.data() || {};
+      if (d.uid !== fbUser.uid) return; // otra persona ya usa ese nombre
+      if (d.email === email) return; // ya está al día
+    }
+    await ref.set({ uid: fbUser.uid, email: email, username: profile.username });
+  } catch (e) {
+    console.warn("[usuario] No se pudo sincronizar el usuario:", e && e.code);
+  }
+}
+
+// ¿Ese nombre de usuario ya lo usa alguien con correo real?
+async function usernameTaken(username) {
+  const name = String(username || "")
+    .trim()
+    .toLowerCase();
+  try {
+    const snap = await window.FB_DB.collection("usernames").doc(name).get();
+    return snap.exists;
+  } catch (e) {
+    return false;
+  }
 }
 
 // Carga el perfil de la sesión de Firebase y decide a qué pantalla ir
@@ -243,6 +278,7 @@ async function loadSession(fbUser) {
     licensed: true,
   };
   state.page = "sales";
+  syncUsernameMapping(fbUser, profile); // sin esperar: no retrasa la entrada
 }
 
 // Reclama una licencia: crea el perfil y marca la licencia como usada en una sola operación atómica
@@ -378,6 +414,12 @@ async function registerUser(username, email, password, confirmPassword) {
   }
   if (password !== confirmPassword) {
     state.loginError = "Las contraseñas no coinciden";
+    render();
+    return false;
+  }
+
+  if (await usernameTaken(username)) {
+    state.loginError = "Ese nombre de usuario ya está en uso. Elige otro.";
     render();
     return false;
   }
@@ -674,7 +716,7 @@ function showRecoveryEmailModal() {
       await window.App.Services.FirebaseAuth.startEmailChange(email, password);
       overlay.querySelector(".modal-body").innerHTML = '<p data-role="done" style="line-height:1.55;font-size:15px"></p>';
       overlay.querySelector('[data-role="done"]').textContent =
-        "Enviamos un enlace a " + email + ". Ábrelo para confirmar el cambio. Después, entra al sistema con ese correo (y tu misma contraseña).";
+        "Enviamos un enlace a " + email + ". Ábrelo para confirmar el cambio. Después, entra al sistema con ese correo o con tu usuario (y tu misma contraseña).";
       overlay.querySelector(".modal-footer").innerHTML = '<button type="button" class="btn btn-primary" data-action="close">Entendido</button>';
       overlay.querySelectorAll('[data-action="close"]').forEach((b) => b.addEventListener("click", close));
     } catch (err) {
@@ -2488,7 +2530,7 @@ function renderLogin() {
       ${state.loginError ? '<div style="background:#fee2e2;color:#dc2626;padding:12px;border-radius:8px;margin-bottom:15px;text-align:center;font-weight:600">' + state.loginError + "</div>" : ""}
       <div class="form-group">
         <label>Usuario o correo</label>
-        <input class="form-control" name="u" type="text" autocomplete="username" placeholder="Usuario o Correo" required>
+        <input class="form-control" name="u" type="text" autocomplete="username" placeholder="usuario o correo@ejemplo.com" required>
       </div>
       <div class="form-group">
         <label>Contraseña</label>
@@ -5237,7 +5279,7 @@ window.addEventListener("beforeunload", (e) => {
   if (typeof firebase === "undefined" || !window.FB_DB) {
     state.loading = false;
     state.loginError =
-      "Verifica tu conexión y Vuelva A Intentar";
+      "No se pudo cargar Firebase. Verifica tu conexión y firebase-config.js";
     render();
     return;
   }
