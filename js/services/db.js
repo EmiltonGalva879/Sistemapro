@@ -1,162 +1,365 @@
+// ===== Administrador principal =====
+// Cuenta histórica + (opcional) el correo REAL del administrador, para poder recuperar
+// la contraseña por correo. Debe ser el MISMO correo que está en firestore.rules.
+const DB_SUPER_LEGACY_EMAIL = 'sistemapro@sistema.local';
+const DB_SUPER_REAL_EMAIL = 'emiltongalva879@gmail.com';
+window.SUPER_REAL_EMAIL = String(DB_SUPER_REAL_EMAIL || '').trim().toLowerCase();
+
+// El correo real solo cuenta como administrador cuando Firebase lo marca como verificado
+window.isSuperAuthUser = function (u) {
+  const e = String((u && u.email) || '').toLowerCase();
+  if (!e) return false;
+  if (e === DB_SUPER_LEGACY_EMAIL) return true;
+  return !!window.SUPER_REAL_EMAIL && e === window.SUPER_REAL_EMAIL && u.emailVerified === true;
+};
+
+// Datos separados por empresa:
+//   companies/{companyId}/data/{key}   ->  { items: [...] }
+// Cada empresa solo puede leer y escribir su propia ruta (lo exigen las reglas de Firestore).
+// El administrador del sistema (Sistemapro) ve todas las empresas a la vez.
 const DB = {
   _cache: {},
   _ready: false,
-  _keys: ['users', 'products', 'sales', 'sales_fiscal', 'sales_normal', 'fiados', 'licenses', 'biz'],
+  _super: false,
+  _companyId: null,
+  _dataKeys: ['users', 'products', 'sales', 'sales_fiscal', 'sales_normal', 'fiados', 'settings'],
+  _byCompany: {},   // solo administrador del sistema: key -> { companyId -> items }
+  _written: {},     // solo administrador del sistema: key -> { companyId -> JSON ya guardado }
   _listeners: [],
+  _base: {},        // empresa normal: key -> últimos items conocidos EN EL SERVIDOR
+  _loaded: {},      // empresa normal: key -> true si se cargó bien desde el servidor
+  _queue: {},       // empresa normal: key -> cadena de guardados (uno a la vez por key)
 
-  async init() {
-    if (this._ready) return;
-    try {
-      const seedRef = window.FB_DB.collection('meta').doc('seed');
-      const snapshot = await seedRef.get();
-      if (!snapshot.exists) {
-        await seedRef.set({
-          initialized: true,
-           users: [{ id: 1, username: 'Sistemapro', email: 'Sistemapro@sistema.local', role: 'ADMIN', createdBy: 'system', created: new Date().toISOString(), licensed: true, companyId: '1' }],
-          products: [],
-           sales: [],
-           sales_fiscal: [],
-           sales_normal: [],
-           fiados: [],
-          licenses: [],
-          biz: {}
-        });
-      }
-      await this._loadAll();
-      await this._migrateIfNeeded();
-      this._subscribeAll();
-      this._ready = true;
-    } catch (e) {
-      this._ready = false;
-      console.error('[DB] Init failed:', e);
-      // Don't throw - allow app to work with localStorage fallback
-      this._loadFromLocalStorage();
-    }
+  _idOf(item) {
+    if (!item) return undefined;
+    return item.id !== undefined && item.id !== null ? item.id : item.companyId;
   },
 
-  _loadFromLocalStorage() {
-    for (const key of this._keys) {
-      try {
-        const data = localStorage.getItem('salesstock_db_' + key);
-        if (data) this._cache[key] = JSON.parse(data);
-      } catch (e) {
-        this._cache[key] = [];
-      }
-    }
-    if (!this._cache.biz) this._cache.biz = {};
+  async init(companyId) {
+    if (this._ready) return;
+    const user = window.FB_AUTH && window.FB_AUTH.currentUser;
+    if (!user) throw new Error('Debes iniciar sesión');
+    this._super = window.isSuperAuthUser(user);
+    this._companyId = this._super ? null : String(companyId || '');
+    if (!this._super && !this._companyId) throw new Error('Tu cuenta no tiene empresa asignada');
+
+    this._base = {};
+    this._loaded = {};
+    this._queue = {};
+    this._dataKeys.forEach(k => { this._cache[k] = []; });
+    this._cache.licenses = [];
+    await this._loadAll();
+    this._subscribeAll();
+    this._ready = true;
+  },
+
+  _col(companyId) {
+    return window.FB_DB.collection('companies').doc(String(companyId)).collection('data');
+  },
+
+  _companyOf(doc) {
+    // doc.ref.parent = colección "data"; su padre es el documento de la empresa
+    const parent = doc.ref.parent && doc.ref.parent.parent;
+    return parent ? parent.id : null;
+  },
+
+  _rebuild(key) {
+    const groups = this._byCompany[key] || {};
+    this._cache[key] = Object.keys(groups).reduce((all, cid) => all.concat(groups[cid]), []);
+  },
+
+  _ingest(doc) {
+    const key = doc.id;
+    const cid = this._companyOf(doc);
+    if (!cid || !this._dataKeys.includes(key)) return null;
+    const items = (doc.data() && doc.data().items) || [];
+    (this._byCompany[key] = this._byCompany[key] || {})[cid] = items;
+    (this._written[key] = this._written[key] || {})[cid] = JSON.stringify(items);
+    return key;
   },
 
   async _loadAll() {
-    for (const key of this._keys) {
-      try {
-        const doc = await window.FB_DB.collection('data').doc(key).get();
-        this._cache[key] = doc.exists ? (doc.data().items || (key === 'biz' ? doc.data() : [])) : (key === 'biz' ? {} : []);
-      } catch (e) {
-        console.warn(`[DB] Failed to load ${key}:`, e.message);
-        this._cache[key] = key === 'biz' ? {} : [];
+    // Licencias: solo las ve el administrador del sistema
+    try {
+      if (this._super) {
+        const snap = await window.FB_DB.collection('licenseKeys').get();
+        this._cache.licenses = snap.docs.map(d => ({ ...d.data(), key: d.id }));
       }
+    } catch (e) {
+      console.warn('[DB] No se pudieron cargar las licencias:', e.message);
     }
-    // Sync localStorage as backup
-    this._syncToLocalStorage();
-  },
 
-  _syncToLocalStorage() {
-    for (const key of this._keys) {
-      try {
-        localStorage.setItem('salesstock_db_' + key, JSON.stringify(this._cache[key] || (key === 'biz' ? {} : [])));
-      } catch (e) {
-        console.warn(`[DB] LocalStorage sync failed for ${key}:`, e.message);
-      }
-    }
-  },
-
-  async _migrateIfNeeded() {
-    let changed = false;
-    for (const key of this._keys) {
-      const arr = this._cache[key];
-      if (!Array.isArray(arr)) continue;
-      arr.forEach(item => {
-        if (key === 'users' && !item.createdBy && item.role === 'ADMIN' && String(item.id) !== '1') {
-          item.createdBy = '1';
-          changed = true;
-        }
-        if (key === 'products' && !item.createdBy) {
-          item.createdBy = '1';
-          changed = true;
-        }
-        if (key !== 'biz' && !item.companyId && item.id) {
-          item.companyId = '1';
-          changed = true;
-        }
-      });
-    }
-    if (changed) {
-      for (const key of this._keys) {
-        if (key === 'biz') continue;
-        if (this._cache[key] && this._cache[key].length >= 0) {
-          try {
-            await window.FB_DB.collection('data').doc(key).set({ items: this._cache[key] });
-          } catch (e) {
-            console.warn(`[DB] Migration write failed for ${key}:`, e.message);
-          }
+    try {
+      if (this._super) {
+        const snap = await window.FB_DB.collectionGroup('data').get();
+        snap.docs.forEach(d => this._ingest(d));
+        this._dataKeys.forEach(k => this._rebuild(k));
+      } else {
+        for (const key of this._dataKeys) {
+          const doc = await this._col(this._companyId).doc(key).get();
+          const items = doc.exists ? ((doc.data() && doc.data().items) || []) : [];
+          this._cache[key] = items;
+          this._base[key] = JSON.parse(JSON.stringify(items));
+          this._loaded[key] = true;
         }
       }
+    } catch (e) {
+      console.error('[DB] No se pudieron cargar los datos:', e);
+      // Empresa normal: NO continuar con datos vacíos (un guardado posterior borraría el servidor)
+      if (!this._super) throw new Error('No se pudieron cargar tus datos. Revisa tu conexión e inténtalo de nuevo.');
     }
   },
 
   _subscribeAll() {
-    // Clean up existing listeners
-    this._listeners.forEach(unsub => {
-      try { unsub(); } catch (e) {}
-    });
-    this._listeners = [];
+    this._unsubscribeAll();
+    const refresh = () => { if (window.state) { window.state._dirty = true; render(); } };
 
-    for (const key of this._keys) {
-      try {
-        const unsub = window.FB_DB.collection('data').doc(key).onSnapshot(
-          doc => {
-            if (doc.exists) {
-              this._cache[key] = key === 'biz' ? doc.data() : (doc.data().items || []);
-              this._syncToLocalStorage();
-              if (window.state) { window.state._dirty = true; render(); }
-            }
+    try {
+      if (this._super) {
+        this._listeners.push(window.FB_DB.collection('licenseKeys').onSnapshot(
+          snap => { this._cache.licenses = snap.docs.map(d => ({ ...d.data(), key: d.id })); refresh(); },
+          err => console.error('[DB] Error en licencias:', err)
+        ));
+        this._listeners.push(window.FB_DB.collectionGroup('data').onSnapshot(
+          snap => {
+            const touched = new Set();
+            snap.docChanges().forEach(ch => {
+              if (ch.type === 'removed') {
+                const key = ch.doc.id, cid = this._companyOf(ch.doc);
+                if (cid && this._byCompany[key]) { delete this._byCompany[key][cid]; delete (this._written[key] || {})[cid]; touched.add(key); }
+              } else {
+                const key = this._ingest(ch.doc);
+                if (key) touched.add(key);
+              }
+            });
+            touched.forEach(k => this._rebuild(k));
+            if (touched.size) refresh();
           },
-          err => console.error(`[DB] Snapshot error for ${key}:`, err)
-        );
-        this._listeners.push(unsub);
-      } catch (e) {
-        console.warn(`[DB] Failed to subscribe to ${key}:`, e.message);
+          err => console.error('[DB] Error en los datos:', err)
+        ));
+      } else {
+        for (const key of this._dataKeys) {
+          this._listeners.push(this._col(this._companyId).doc(key).onSnapshot(
+            doc => {
+              if (doc.exists) {
+                const items = (doc.data() && doc.data().items) || [];
+                this._cache[key] = items;
+                if (!doc.metadata.hasPendingWrites) {
+                  this._base[key] = JSON.parse(JSON.stringify(items));
+                  this._loaded[key] = true;
+                }
+                refresh();
+              }
+            },
+            err => console.error('[DB] Error en ' + key + ':', err)
+          ));
+        }
       }
+    } catch (e) {
+      console.warn('[DB] No se pudo suscribir a los cambios:', e.message);
     }
   },
 
+  _unsubscribeAll() {
+    this._listeners.forEach(unsub => { try { unsub(); } catch (e) {} });
+    this._listeners = [];
+  },
+
   get(key) {
-    if (!this._cache[key]) this._cache[key] = key === 'biz' ? {} : [];
-    // Return a copy to prevent direct mutation
-    return Array.isArray(this._cache[key]) ? [...this._cache[key]] : { ...this._cache[key] };
+    if (!this._cache[key]) this._cache[key] = [];
+    return Array.isArray(this._cache[key]) ? [...this._cache[key]] : [];
   },
 
   set(key, data) {
-    if (!this._cache[key]) this._cache[key] = key === 'biz' ? {} : [];
     this._cache[key] = data;
-    this._syncToLocalStorage();
     if (window.state) { window.state._dirty = true; render(); }
 
-    return window.FB_DB.collection('data').doc(key).set(
-      key === 'biz' ? data : { items: data }
-    ).catch(err => {
-      console.error(`[DB] Failed to write ${key}:`, err);
+    if (key === 'licenses') return this._saveLicenses(data);
+    if (!this._dataKeys.includes(key)) return Promise.resolve(null);
+
+    const onError = err => {
+      console.error('[DB] No se pudo guardar ' + key + ':', err);
+      const code = (err && (err.code || err.message)) || 'desconocido';
+      if (window.alert) alert('No se pudo guardar "' + key + '".\nMotivo: ' + code + '\nVerifica tu conexión y tus permisos.');
       return null;
+    };
+
+    // Firestore rechaza campos con valor undefined: se eliminan antes de guardar
+    try {
+      data = JSON.parse(JSON.stringify(data || []));
+      this._cache[key] = data;
+    } catch (e) {
+      return Promise.resolve(onError(e));
+    }
+
+    if (!this._super) {
+      return this._saveMerged(key, data).catch(onError);
+    }
+
+    // Administrador del sistema: cada elemento va a la empresa a la que pertenece
+    const groups = {};
+    (data || []).forEach(item => {
+      const cid = String((item && item.companyId) || '1');
+      (groups[cid] = groups[cid] || []).push(item);
     });
+    const known = Object.keys(this._byCompany[key] || {});
+    const companies = Array.from(new Set(known.concat(Object.keys(groups))));
+    const writes = [];
+    this._byCompany[key] = this._byCompany[key] || {};
+    this._written[key] = this._written[key] || {};
+
+    companies.forEach(cid => {
+      const items = groups[cid] || [];
+      const json = JSON.stringify(items);
+      if (this._written[key][cid] === json) return;
+      this._byCompany[key][cid] = items;
+      writes.push(this._col(cid).doc(key).set({ items: items }).then(() => { this._written[key][cid] = json; }));
+    });
+    return Promise.all(writes).catch(onError);
   },
 
-  // Cleanup method for testing or hot reload
-  destroy() {
-    this._listeners.forEach(unsub => {
-      try { unsub(); } catch (e) {}
+  // Guardado SEGURO para empresas normales: en vez de sobrescribir todo el documento,
+  // calcula qué elementos agregaste / cambiaste / quitaste respecto a lo último que se leyó
+  // del servidor y aplica SOLO eso sobre lo que hay actualmente en el servidor (transacción).
+  // Así un dispositivo con datos viejos o incompletos no puede borrar lo que hizo otro.
+  _saveMerged(key, data) {
+    const run = () => this._doSaveMerged(key, data);
+    const prev = this._queue[key] || Promise.resolve();
+    const next = prev.then(run, run);
+    this._queue[key] = next.catch(() => {});
+    return next;
+  },
+
+  async _doSaveMerged(key, data) {
+    if (!this._loaded[key]) {
+      throw new Error('Los datos de "' + key + '" no se han cargado; se cancela el guardado para no borrar información.');
+    }
+    const base = this._base[key] || [];
+    const baseById = new Map();
+    let canMerge = true;
+    base.forEach(it => { const id = this._idOf(it); if (id === undefined) canMerge = false; else baseById.set(String(id), it); });
+    const newIds = new Set();
+    data.forEach(it => { const id = this._idOf(it); if (id === undefined) canMerge = false; else newIds.add(String(id)); });
+
+    const ref = this._col(this._companyId).doc(key);
+
+    // Documentos sin id (no deberían existir): se guarda completo como antes
+    if (!canMerge) {
+      await ref.set({ items: data });
+      this._base[key] = JSON.parse(JSON.stringify(data));
+      return;
+    }
+
+    const upserts = [];
+    data.forEach(it => {
+      const old = baseById.get(String(this._idOf(it)));
+      if (!old || JSON.stringify(old) !== JSON.stringify(it)) upserts.push(it);
     });
-    this._listeners = [];
+    const removed = new Set();
+    baseById.forEach((_, id) => { if (!newIds.has(id)) removed.add(id); });
+
+    if (!upserts.length && !removed.size) return;
+
+    const merged = await window.FB_DB.runTransaction(async tx => {
+      const snap = await tx.get(ref);
+      const server = snap.exists ? ((snap.data() && snap.data().items) || []) : [];
+      const out = [];
+      const idx = new Map();
+      server.forEach(it => {
+        const id = String(this._idOf(it));
+        if (removed.has(id)) return;
+        idx.set(id, out.length);
+        out.push(it);
+      });
+      upserts.forEach(it => {
+        const id = String(this._idOf(it));
+        if (idx.has(id)) out[idx.get(id)] = it;
+        else { idx.set(id, out.length); out.push(it); }
+      });
+      tx.set(ref, { items: out });
+      return out;
+    });
+
+    this._base[key] = JSON.parse(JSON.stringify(merged));
+    this._cache[key] = merged;
+    if (window.state) { window.state._dirty = true; render(); }
+  },
+
+  // Las licencias solo las administra Sistemapro; se guarda una por documento
+  async _saveLicenses(list) {
+    if (!this._super) return null;
+    try {
+      const col = window.FB_DB.collection('licenseKeys');
+      const snap = await col.get();
+      const existing = {};
+      snap.docs.forEach(d => { existing[d.id] = d.data(); });
+
+      const batch = window.FB_DB.batch();
+      const wanted = new Set();
+      (list || []).forEach(l => {
+        if (!l || !l.key) return;
+        wanted.add(l.key);
+        const { key, ...rest } = l;
+        if (JSON.stringify(existing[key] || null) !== JSON.stringify(rest)) {
+          batch.set(col.doc(key), rest);
+        }
+      });
+      Object.keys(existing).forEach(k => { if (!wanted.has(k)) batch.delete(col.doc(k)); });
+      await batch.commit();
+      return true;
+    } catch (err) {
+      console.error('[DB] No se pudo guardar licenses:', err);
+      return null;
+    }
+  },
+
+  // Elimina TODOS los datos de una empresa (productos, ventas, créditos, usuarios)
+  // y los perfiles de sus cuentas. Solo lo puede hacer el administrador del sistema.
+  async deleteCompany(companyId) {
+    if (!this._super) throw new Error('Solo el administrador del sistema puede eliminar empresas');
+    const cid = String(companyId || '').trim();
+    if (!cid || cid === '1' || /\//.test(cid)) throw new Error('Empresa inválida');
+
+    const batch = window.FB_DB.batch();
+    const dataSnap = await this._col(cid).get();
+    dataSnap.docs.forEach(d => batch.delete(d.ref));
+
+    const profilesCol = window.FB_DB.collection('profiles');
+    const profSnap = await profilesCol.where('companyId', '==', cid).get();
+    const profIds = new Set(profSnap.docs.map(d => d.id));
+    profIds.add(cid); // el perfil del dueño usa el id de la empresa
+    profIds.forEach(id => batch.delete(profilesCol.doc(id)));
+
+    // Los nombres de usuario de esas cuentas también se liberan
+    const namesCol = window.FB_DB.collection('usernames');
+    for (const id of profIds) {
+      const mapped = await namesCol.where('uid', '==', id).get();
+      mapped.docs.forEach(d => batch.delete(d.ref));
+    }
+
+    await batch.commit();
+
+    // Limpiar la copia local
+    this._dataKeys.forEach(key => {
+      if (this._byCompany[key]) delete this._byCompany[key][cid];
+      if (this._written[key]) delete this._written[key][cid];
+      this._rebuild(key);
+    });
+    if (window.state) { window.state._dirty = true; render(); }
+    return { data: dataSnap.size, profiles: profIds.size };
+  },
+
+  destroy() {
+    this._unsubscribeAll();
+    this._cache = {};
+    this._byCompany = {};
+    this._written = {};
+    this._base = {};
+    this._loaded = {};
+    this._queue = {};
     this._ready = false;
+    this._super = false;
+    this._companyId = null;
   }
 };
 

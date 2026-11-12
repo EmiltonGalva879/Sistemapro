@@ -163,7 +163,7 @@ let state = {
 
 // Cambia este texto cada vez que publiques: aparece al pie del login y en la consola,
 // y sirve para comprobar qué versión está sirviendo realmente Vercel / Electron.
-const APP_VERSION = "10.0";
+const APP_VERSION = "10.2";
 console.info("[SalesStock Pro] versión", APP_VERSION);
 
 let sessionLoading = false; // evita que onAuthStateChanged interfiera mientras se registra una cuenta
@@ -871,15 +871,31 @@ function getProducts() {
   if (!state.user) return products;
   const companyId = getCompanyId();
   if (!companyId) return products;
-  if (state.search) {
-    return products.filter(
-      (p) =>
-        String(p.companyId) === companyId &&
-        (p.name.toLowerCase().includes(state.search.toLowerCase()) ||
-          p.barcode.includes(state.search)),
-    );
-  }
+  // IMPORTANTE: nunca filtrar por búsqueda aquí. Esta lista se usa para modificar
+  // stock y guardar; si estuviera filtrada, al guardar se borrarían los demás productos.
   return products.filter((p) => String(p.companyId) === companyId);
+}
+
+// Solo para mostrar en pantalla (lista de productos con buscador)
+function getSearchedProducts() {
+  const q = (state.search || "").toLowerCase();
+  const list = getProducts();
+  if (!q) return list;
+  return list.filter(
+    (p) =>
+      String(p.name || "").toLowerCase().includes(q) ||
+      String(p.barcode || "").includes(q),
+  );
+}
+
+// Guarda solo los productos modificados sobre la lista COMPLETA, sin tocar los demás
+function saveProductsMerged(changed) {
+  const all = DB.get("products");
+  changed.forEach((c) => {
+    const i = all.findIndex((p) => p.id === c.id);
+    if (i >= 0) all[i] = c;
+  });
+  DB.set("products", all);
 }
 
 function getLowStock() {
@@ -904,13 +920,14 @@ function saveProduct(product) {
   DB.set("products", products);
 }
 
-function saveQuickProduct(name, price, stock, minStock, barcode) {
+function saveQuickProduct(name, price, purchasePrice, stock, minStock, barcode) {
   const products = DB.get("products");
   const newProduct = {
     id: Date.now(),
     name: name,
-    price: parseFloat(price),
-    stock: parseInt(stock) || 0,
+    price: Number(price) || 0,
+    purchasePrice: Number(purchasePrice) || 0,
+    stock: parseInt(stock, 10) || 0,
     minStock: parseInt(minStock) || 5,
     barcode: barcode,
     createdBy: String(state.user.id),
@@ -936,9 +953,32 @@ function getSales() {
   const fiscalSales = DB.get("sales_fiscal") || [];
   const normalSales = DB.get("sales_normal") || [];
   const all = [...sales, ...fiscalSales, ...normalSales];
+
+  // Una misma venta puede existir en la colección antigua "sales" y
+  // también en "sales_fiscal" o "sales_normal". Unificar por empresa e ID
+  // evita contarla dos veces en reportes, dashboard y listados.
+  const uniqueSales = [];
+  const seen = new Set();
+
+  for (const sale of all) {
+    if (!sale || typeof sale !== "object") continue;
+
+    const saleId = sale.id;
+    // No deduplicar ventas sin ID: podrían ser transacciones legítimas distintas.
+    const key = saleId !== undefined && saleId !== null && String(saleId) !== ""
+      ? `${String(sale.companyId ?? "")}::${String(saleId)}`
+      : null;
+
+    if (key !== null) {
+      if (seen.has(key)) continue;
+      seen.add(key);
+    }
+    uniqueSales.push(sale);
+  }
+
   const companyId = getCompanyId();
-  if (!companyId) return all;
-  return all.filter((s) => String(s.companyId) === companyId);
+  if (!companyId) return uniqueSales;
+  return uniqueSales.filter((s) => String(s.companyId) === companyId);
 }
 function getVisibleSales() {
   const sales = getSales();
@@ -1102,10 +1142,10 @@ async function deleteSale(id) {
       p.stock += item.quantity;
     }
   });
-  DB.set("products", products);
+  saveProductsMerged(products);
   DB.set(
     "sales",
-    getSales().filter((s) => s.id !== id),
+    DB.get("sales").filter((s) => s.id !== id),
   );
   DB.set(
     "sales_fiscal",
@@ -1177,10 +1217,12 @@ async function cancelCart() {
 
 function showPaymentOptions(mode) {
   const subtotal = getCartTotal();
-  const itbis = subtotal * ITBIS_RATE;
-  const total = subtotal + itbis;
+  const itbis = 0;
+  const total = subtotal;
+
   const receiptType =
     localStorage.getItem("salesstock_receiptType") || "normal";
+
   state.modal = {
     type: "payment",
     subtotal: subtotal,
@@ -1189,6 +1231,7 @@ function showPaymentOptions(mode) {
     paymentMode: mode || "sale",
     receiptType: receiptType,
   };
+
   render();
 }
 
@@ -1371,9 +1414,9 @@ function completeSale(paymentType, customerData) {
   const modoPago = paymentType || "contado";
   const isCredit = modoPago === "credito";
   const subtotal = getCartTotal();
-  const itbis = subtotal * ITBIS_RATE;
-  const interest = isCredit ? subtotal * 0.05 : 0;
-  const finalTotal = subtotal + itbis + interest;
+const itbis = 0;
+const interest = isCredit ? subtotal * 0.05 : 0;
+const finalTotal = subtotal + interest;
   const receiptType = customerData.receiptType || "normal";
 
   const sale = {
@@ -1415,7 +1458,7 @@ function completeSale(paymentType, customerData) {
       product.stock -= item.quantity;
     }
   });
-  DB.set("products", products);
+  saveProductsMerged(products);
   saveSaleToCollection(sale, receiptType);
   generateInvoice(sale);
 
@@ -1747,7 +1790,10 @@ function getStats() {
   };
 }
 
-const fmtMoney = (v) => "RD$" + v.toFixed(2);
+const fmtMoney = (v) => {
+  const amount = Number(v);
+  return "RD$" + (Number.isFinite(amount) ? amount : 0).toFixed(2);
+};
 const fmtMoneyInvoice = (v) => "RD$ " + Number(v).toFixed(2);
 const round2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
 const roundPeso = (n) => Math.round(Number(n) || 0);
@@ -1765,6 +1811,24 @@ const MARGIN_X = 8;
 const INNER_W = PAGE_W - MARGIN_X * 2;
 const FONT = "helvetica";
 const LINE_COLOR = [180, 180, 180];
+// Nombre de la empresa en el encabezado: baja el tamaño de letra si es largo para que
+// no se corte en la impresión y, si aun así no cabe, lo parte en varias líneas.
+function pdfBizName(doc, name, y) {
+  const maxW = INNER_W - 4; // margen extra de seguridad para la impresora
+  doc.setFont(FONT, "bold");
+  let size = 15;
+  doc.setFontSize(size);
+  while (size > 9 && doc.getTextWidth(name) > maxW) {
+    size -= 0.5;
+    doc.setFontSize(size);
+  }
+  const lines = doc.splitTextToSize(name, maxW);
+  const lh = size * 0.36;
+  lines.forEach((ln, i) => {
+    doc.text(ln, PAGE_W / 2, y + i * lh, { align: "center" });
+  });
+  return y + (lines.length - 1) * lh + 5;
+}
 let pdfY = 8;
 function abbreviateText(doc, text, maxWidth) {
   if (doc.getTextWidth(text) <= maxWidth) return text;
@@ -1778,6 +1842,18 @@ function pdfLine(doc, x, w, y) {
   doc.setDrawColor(...LINE_COLOR);
   doc.setLineWidth(0.4);
   doc.line(x, y, x + w, y);
+}
+// Fila de producto: la descripción se muestra COMPLETA y, si no cabe, baja a la línea de abajo.
+function pdfItemRow(doc, item, y, colQty, colDescStart, colUnit, colTotal) {
+  const pu = "$" + Math.round(item.price);
+  const tot = "$" + Math.round(item.subtotal);
+  const nameMaxW = colUnit - doc.getTextWidth(pu) - 1.5 - colDescStart;
+  const lines = doc.splitTextToSize(String(item.name || ""), nameMaxW);
+  doc.text(String(item.quantity), colQty, y + 1.5, { align: "left" });
+  doc.text(lines, colDescStart, y + 1.5, { align: "left" });
+  doc.text(pu, colUnit, y + 1.5, { align: "right" });
+  doc.text(tot, colTotal, y + 1.5, { align: "right" });
+  return y + 9 + (lines.length - 1) * 3.4;
 }
 function pdfTitle(doc, text, y) {
   doc.setFont(FONT, "bold");
@@ -1802,7 +1878,7 @@ function pdfCalcInvoiceHeight(sale) {
   const tmp = new jsPDF({ unit: "mm", format: [80, 1000] });
   let h = 10;
   h += 8;
-  if (bizName) h += 4;
+  if (bizName) h += 8; // deja espacio por si el nombre se parte en 2 líneas
   [bizRnc, bizPhone, bizEmail].forEach((v) => {
     if (v) h += 4;
   });
@@ -1833,7 +1909,7 @@ function pdfCalcReportHeight(sales) {
   const bizAddr = bizGet("bizaddress") || "";
   const bizRnc = bizGet("bizrnc") || "";
   const tmp = new jsPDF({ unit: "mm", format: [80, 1000] });
-  if (bizName) h += 4;
+  if (bizName) h += 8; // deja espacio por si el nombre se parte en 2 líneas
   [bizPhone, bizEmail].forEach((v) => {
     if (v) h += 4;
   });
@@ -1874,10 +1950,7 @@ function generateQuoteInvoice(quote) {
   const bizEmail = bizGet("bizemail") || "";
   const bizAddr = bizGet("bizaddress") || "";
 
-  doc.setFont(FONT, "bold");
-  doc.setFontSize(15);
-  doc.text(bizName, PAGE_W / 2, y, { align: "center" });
-  y += 5;
+  y = pdfBizName(doc, bizName, y);
   doc.setFont(FONT, "normal");
   doc.setFontSize(9);
   if (bizPhone) {
@@ -1948,9 +2021,9 @@ function generateQuoteInvoice(quote) {
   }
 
   doc.setFont(FONT, "bold");
-  doc.setFontSize(9);
+  doc.setFontSize(8);
   const colQty = MARGIN_X;
-  const colDescStart = MARGIN_X + 10;
+  const colDescStart = MARGIN_X + 8;
   const colUnit = MARGIN_X + INNER_W - 18;
   const colTotal = MARGIN_X + INNER_W;
   doc.text("CANT", colQty, y, { align: "left" });
@@ -1964,15 +2037,7 @@ function generateQuoteInvoice(quote) {
   doc.setFont(FONT, "normal");
   doc.setFontSize(8);
   quote.items.forEach((item) => {
-    const name = abbreviateText(doc, item.name, INNER_W - 22);
-    const lineH = 7;
-    const pu = "$" + Math.round(item.price);
-    const tot = "$" + Math.round(item.subtotal);
-    doc.text(String(item.quantity), colQty, y + 1.2, { align: "left" });
-    doc.text(name, colDescStart, y + 1.2, { align: "left" });
-    doc.text(pu, colUnit, y + 1.2, { align: "right" });
-    doc.text(tot, colTotal, y + 1.2, { align: "right" });
-    y += lineH + 2;
+    y = pdfItemRow(doc, item, y, colQty, colDescStart, colUnit, colTotal);
   });
 
   y += 1;
@@ -2029,10 +2094,7 @@ function buildInvoiceDocument(sale, pageH) {
   const bizEmail = bizGet("bizemail") || "";
   const bizAddr = bizGet("bizaddress") || "";
 
-  doc.setFont(FONT, "bold");
-  doc.setFontSize(15);
-  doc.text(bizName, PAGE_W / 2, y, { align: "center" });
-  y += 5;
+  y = pdfBizName(doc, bizName, y);
   doc.setFont(FONT, "normal");
   doc.setFontSize(9);
   if (bizPhone) {
@@ -2114,9 +2176,9 @@ function buildInvoiceDocument(sale, pageH) {
 
   // ===== TABLA DE PRODUCTOS (mismo formato que la cotización) =====
   doc.setFont(FONT, "bold");
-  doc.setFontSize(9);
+  doc.setFontSize(8);
   const colQty = MARGIN_X;
-  const colDescStart = MARGIN_X + 10;
+  const colDescStart = MARGIN_X + 8;
   const colUnit = MARGIN_X + INNER_W - 18;
   const colTotal = MARGIN_X + INNER_W;
   doc.text("CANT", colQty, y, { align: "left" });
@@ -2130,17 +2192,7 @@ function buildInvoiceDocument(sale, pageH) {
   doc.setFont(FONT, "normal");
   doc.setFontSize(8);
   sale.items.forEach((item) => {
-    const pu = "$" + Math.round(item.price);
-    const tot = "$" + Math.round(item.subtotal);
-    const lineH = 7;
-    const puWidth = doc.getTextWidth(pu);
-    const nameMaxW = colUnit - puWidth - 2 - colDescStart;
-    const name = abbreviateText(doc, item.name, nameMaxW);
-    doc.text(String(item.quantity), colQty, y + 1.2, { align: "left" });
-    doc.text(name, colDescStart, y + 1.2, { align: "left" });
-    doc.text(pu, colUnit, y + 1.2, { align: "right" });
-    doc.text(tot, colTotal, y + 1.2, { align: "right" });
-    y += lineH + 2;
+    y = pdfItemRow(doc, item, y, colQty, colDescStart, colUnit, colTotal);
   });
 
   y += 1;
@@ -2153,10 +2205,7 @@ function buildInvoiceDocument(sale, pageH) {
     align: "right",
   });
   y += 5;
-  doc.text("ITBIS (18%): " + fmtMoneyInvoice(sale.itbis), colTotal, y, {
-    align: "right",
-  });
-  y += 5;
+  
   if (sale.paymentType === "credito") {
     doc.text("Interés (5%): " + fmtMoneyInvoice(sale.interest), colTotal, y, {
       align: "right",
@@ -2207,7 +2256,6 @@ function buildInvoiceDocument(sale, pageH) {
   y += 4;
   pdfLine(doc, MARGIN_X, INNER_W, y);
   y += 6;
-
   const ticketBarcodeY = y;
   const ticketCanvas = document.createElement("canvas");
   ticketCanvas.width = 300;
@@ -2714,8 +2762,8 @@ function createFiadoFromCart(customerName, customerPhone, notes) {
   if (state.cart.length === 0) return alert("El carrito está vacío");
 
   const subtotal = getCartTotal();
-  const itbis = subtotal * ITBIS_RATE;
-  const total = roundPeso(subtotal + itbis);
+const itbis = 0;
+const total = roundPeso(subtotal);
 
   // Decrease stock
   const products = getProducts();
@@ -2726,7 +2774,7 @@ function createFiadoFromCart(customerName, customerPhone, notes) {
       product.stock -= item.quantity;
     }
   });
-  DB.set("products", products);
+  saveProductsMerged(products);
 
   const fiado = {
     customerName: customerName,
@@ -3005,10 +3053,10 @@ async function deleteFiado(id) {
       p.stock += item.quantity;
     }
   });
-  DB.set("products", products);
+  saveProductsMerged(products);
   DB.set(
     "fiados",
-    getFiados().filter((f) => f.id !== id),
+    DB.get("fiados").filter((f) => f.id !== id),
   );
   alert("Credito eliminado");
   render();
@@ -3230,10 +3278,7 @@ function buildFiadoDocument(fiado) {
   const bizEmail = bizGet("bizemail") || "";
   const bizAddr = bizGet("bizaddress") || "";
 
-  doc.setFont(FONT, "bold");
-  doc.setFontSize(15);
-  doc.text(bizName, PAGE_W / 2, y, { align: "center" });
-  y += 5;
+  y = pdfBizName(doc, bizName, y);
   doc.setFont(FONT, "normal");
   doc.setFontSize(9);
   if (bizPhone) {
@@ -3285,9 +3330,9 @@ function buildFiadoDocument(fiado) {
   y += 4;
 
   doc.setFont(FONT, "bold");
-  doc.setFontSize(9);
+  doc.setFontSize(8);
   const colQty = MARGIN_X;
-  const colDescStart = MARGIN_X + 10;
+  const colDescStart = MARGIN_X + 8;
   const colUnit = MARGIN_X + INNER_W - 18;
   const colTotal = MARGIN_X + INNER_W;
   doc.text("CANT", colQty, y, { align: "left" });
@@ -3301,15 +3346,7 @@ function buildFiadoDocument(fiado) {
   doc.setFont(FONT, "normal");
   doc.setFontSize(8);
   fiado.items.forEach((item) => {
-    const name = abbreviateText(doc, item.name, INNER_W - 22);
-    const lineH = 7;
-    const pu = "$" + Math.round(item.price);
-    const tot = "$" + Math.round(item.subtotal);
-    doc.text(String(item.quantity), colQty, y + 1.2, { align: "left" });
-    doc.text(name, colDescStart, y + 1.2, { align: "left" });
-    doc.text(pu, colUnit, y + 1.2, { align: "right" });
-    doc.text(tot, colTotal, y + 1.2, { align: "right" });
-    y += lineH + 2;
+    y = pdfItemRow(doc, item, y, colQty, colDescStart, colUnit, colTotal);
   });
 
   y += 1;
@@ -3321,11 +3358,8 @@ function buildFiadoDocument(fiado) {
   doc.text("Subtotal: " + fmtMoneyInvoice(fiado.subtotal), colTotal, y, {
     align: "right",
   });
-  y += 4;
-  doc.text("ITBIS (18%): " + fmtMoneyInvoice(fiado.itbis), colTotal, y, {
-    align: "right",
-  });
-  y += 4;
+  y += 5;
+ 
   doc.setFont(FONT, "bold");
   doc.setFontSize(12);
   doc.text("TOTAL: " + fmtMoneyInvoice(fiado.total), colTotal, y, {
@@ -3386,7 +3420,21 @@ function pdfCalcInvoiceHeight(data) {
       ? 20 + data.payments.length * 4
       : 0;
   const total = 30;
-  return base + lines * 8 + header + payments + total;
+  // Espacio extra para las descripciones largas que bajan a otra línea
+  let extra = 0;
+  try {
+    const tmp = new jsPDF({ unit: "mm", format: [PAGE_W, 1000] });
+    tmp.setFont(FONT, "normal");
+    tmp.setFontSize(8);
+    const colUnit = MARGIN_X + INNER_W - 18;
+    const colDescStart = MARGIN_X + 8;
+    items.forEach((it) => {
+      const w = colUnit - tmp.getTextWidth("$" + Math.round(it.price)) - 1.5 - colDescStart;
+      const n = tmp.splitTextToSize(String(it.name || ""), w).length;
+      extra += (n - 1) * 3.4;
+    });
+  } catch (e) {}
+  return base + lines * 8 + header + payments + total + extra;
 }
 
 function renderNewFiadoModal() {
@@ -3412,7 +3460,7 @@ function renderNewFiadoModal() {
               <div style="display:flex;flex-direction:column;gap:6px">
                 <div style="display:flex;justify-content:space-between"><span>Productos en carrito:</span><span>${state.cart.length}</span></div>
                 <div style="display:flex;justify-content:space-between"><span>Subtotal:</span><span>${fmtMoneyInvoice(getCartTotal())}</span></div>
-                <div style="display:flex;justify-content:space-between"><span>ITBIS (18%):</span><span>${fmtMoneyInvoice(getCartTotal() * ITBIS_RATE)}</span></div>
+                
                 <div style="display:flex;justify-content:space-between;font-size:18px;font-weight:700;color:#10b981;border-top:1px solid #e2e8f0;padding-top:8px;margin-top:4px"><span>Total:</span><span>${fmtMoneyInvoice(getCartTotal() * (1 + ITBIS_RATE))}</span></div>
               </div>
             </div>
@@ -3690,7 +3738,7 @@ function renderSaleInvoiceHtml(sale) {
     ? `
     <div class="inv-section">
       <div><strong>Subtotal:</strong> ${fmtMoneyInvoice(sale.subtotal)}</div>
-      <div><strong>ITBIS (18%):</strong> ${fmtMoneyInvoice(sale.itbis)}</div>
+      
     </div>
   `
     : "";
@@ -3761,22 +3809,30 @@ function onProductSearch(v) {
 window.onProductSearch = onProductSearch;
 
 function renderProducts() {
-  const products = getProducts();
+  const products = getSearchedProducts();
   return `
     <div class="header"><h1>Productos</h1><button class="btn btn-primary" onclick="state.modal={type:'product'};render()">+ Nuevo Producto</button></div>
     <div class="card" style="background:#1e293b;color:#fff;padding:20px;margin-bottom:20px">
       <div style="font-size:13px;margin-bottom:8px;color:#94a3b8">ESCANER DE PRODUCTOS</div>
       <div style="display:flex;gap:10px">
-        <input id="scanner-prod" class="form-control" style="font-size:20px;padding:16px;text-align:center;font-weight:700;background:#fff;color:#1e293b" placeholder="Escanear codigo de barras..." onkeydown="if(event.key==='Enter'){scanProductBarcode(this.value);this.value=''}">
+        <input id="scanner-prod" class="form-control" style="font-size:20px;padding:16px;text-align:center;font-weight:700;background:#fff;color:#1e293b" placeholder="Escanear codigo" onkeydown="if(event.key==='Enter'){scanProductBarcode(this.value);this.value=''}">
         <button class="btn btn-primary" onclick="startCameraScan()" style="padding:16px 20px;font-size:18px">📷</button>
       </div>
     </div>
     <div class="search">
-      <input class="search-input" placeholder="Buscar productos..." value="${escapeHtml(state.search)}" oninput="onProductSearch(this.value)">
+      <input class="search-input" placeholder="Buscar productos" value="${escapeHtml(state.search)}" oninput="onProductSearch(this.value)">
     </div>
     <div class="card">
       <table>
-      <thead><tr><th>Nombre</th><th>Precio</th><th>Stock</th><th>Mín.</th><th>Barcode</th><th>Acciones</th></tr></thead>
+        <thead><tr>
+          <th>Nombre</th>
+          <th>Precio de compra</th>
+          <th>Precio de venta</th>
+          <th>Stock</th>
+          <th>Stock mínimo</th>
+          <th>Código</th>
+          <th>Acciones</th>
+        </tr></thead>
         <tbody>
           ${
             products.length
@@ -3785,8 +3841,9 @@ function renderProducts() {
                     (p) => `
             <tr class="${p.stock <= p.minStock ? "low-stock" : ""}">
               <td><strong>${p.name}</strong></td>
-              <td>${fmtMoney(p.price)}</td>
-              <td>${p.stock}</td>
+              <td>${fmtMoney(p.purchasePrice ?? 0)}</td>
+              <td>${fmtMoney(p.price ?? p.salePrice ?? 0)}</td>
+              <td>${Number(p.stock) || 0}</td>
               <td>${p.minStock}</td>
               <td style="font-family:monospace;font-size:12px">${p.barcode || "-"}</td>
               <td>
@@ -3801,7 +3858,7 @@ function renderProducts() {
           `,
                   )
                   .join("")
-              : '<tr><td colspan="6"><div class="empty">No se encontraron productos</div></td></tr>'
+              : '<tr><td colspan="7"><div class="empty">No se encontraron productos</div></td></tr>'
           }
         </tbody>
       </table>
@@ -4469,13 +4526,14 @@ function renderModal() {
       <div class="modal-overlay" onclick="state.modal=null;render()">
         <div class="modal" onclick="event.stopPropagation()">
           <div class="modal-header"><h2 class="modal-title">${p.id ? "Editar" : "Nuevo"} Producto</h2><button class="btn btn-secondary" onclick="state.modal=null;render()">✕</button></div>
-          <form onsubmit="event.preventDefault();saveProduct({id:${p.id || "null"},name:this.n.value,price:parseFloat(this.pr.value),stock:parseInt(this.s.value),minStock:parseInt(this.m.value),barcode:this.b.value});state.modal=null;render()">
+          <form onsubmit="event.preventDefault();saveProduct({id:${p.id || "null"},name:this.n.value,price:Number(this.pr.value)||0,purchasePrice:Number(this.purchasePrice.value)||0,stock:parseInt(this.s.value,10)||0,minStock:parseInt(this.m.value,10)||0,barcode:this.b.value});state.modal=null;render()">
             <div class="modal-body">
-              <div class="form-group"><label>Nombre *</label><input class="form-control" name="n" value="${p.name || ""}" required></div>
+              <div class="form-group"><label>Nombre</label><input class="form-control" name="n" value="${p.name || ""}" required></div>
               <div class="form-row">
-                <div class="form-group"><label>Precio *</label><input class="form-control" name="pr" type="number" step="0.01" value="${p.price || ""}" required></div>
-                <div class="form-group"><label>Stock</label><input class="form-control" name="s" type="number" value="${p.stock || ""}"></div>
+                <div class="form-group"><label>Precio de compra</label><input class="form-control" name="purchasePrice" type="number" min="0" step="0.01" value="${p.purchasePrice ?? 0}"></div>
+                <div class="form-group"><label>Precio de venta</label><input class="form-control" name="pr" type="number" min="0" step="0.01" value="${p.price ?? p.salePrice ?? 0}" required></div>
               </div>
+              <div class="form-group"><label>Stock</label><input class="form-control" name="s" type="number" min="0" step="1" value="${p.stock ?? 0}"></div>
               <div class="form-row">
                 <div class="form-group"><label>Stock Mínimo</label><input class="form-control" name="m" type="number" value="${p.minStock || 10}"></div>
                 <div class="form-group"><label>Barcode</label><input class="form-control" name="b" value="${p.barcode || ""}"></div>
@@ -4567,8 +4625,8 @@ function renderModal() {
                    <span>${fmtMoneyInvoice(m.subtotal)}</span>
                  </div>
                  <div style="display:flex;justify-content:space-between">
-                   <span>ITBIS (18%):</span>
-                   <span>${fmtMoneyInvoice(m.itbis)}</span>
+    
+                  
                  </div>
                  <div style="display:flex;justify-content:space-between;font-size:18px;font-weight:700;color:#10b981;border-top:1px solid #e2e8f0;padding-top:8px;margin-top:4px">
                    <span>Total:</span>
@@ -4610,16 +4668,17 @@ function renderModal() {
       <div class="modal-overlay" onclick="state.modal=null;render()">
         <div class="modal" onclick="event.stopPropagation()">
           <div class="modal-header"><h2 class="modal-title">Agregar Producto</h2><button class="btn btn-secondary" onclick="state.modal=null;render()">✕</button></div>
-          <form onsubmit="event.preventDefault();saveQuickProduct(this.n.value,this.pr.value,this.s.value,this.m.value,this.b.value)">
+          <form onsubmit="event.preventDefault();saveQuickProduct(this.n.value,this.pr.value,this.purchasePrice.value,this.s.value,this.m.value,this.b.value)">
             <div class="modal-body">
               <div class="alert-box" style="background:#dbeafe;color:#1e40af;border-color:#93c5fd;margin-bottom:15px">
                 Código detectado: <strong>${m.barcode}</strong>
               </div>
               <div class="form-group"><label>Nombre *</label><input class="form-control" name="n" placeholder="Nombre del producto" required></div>
               <div class="form-row">
-                <div class="form-group"><label>Precio *</label><input class="form-control" name="pr" type="number" step="0.01" placeholder="0.00" required></div>
-                <div class="form-group"><label>Stock</label><input class="form-control" name="s" type="number" value="0"></div>
+                <div class="form-group"><label>Precio de compra (RD$)</label><input class="form-control" name="purchasePrice" type="number" min="0" step="0.01" value="0"></div>
+                <div class="form-group"><label>Precio de venta (RD$) *</label><input class="form-control" name="pr" type="number" min="0" step="0.01" placeholder="0.00" required></div>
               </div>
+              <div class="form-group"><label>Stock</label><input class="form-control" name="s" type="number" min="0" step="1" value="0"></div>
               <div class="form-row">
                 <div class="form-group"><label>Stock Mínimo</label><input class="form-control" name="m" type="number" value="5"></div>
                 <div class="form-group"><label>Código</label><input class="form-control" name="b" value="${m.barcode}" readonly style="background:#f3f4f6"></div>
@@ -4833,7 +4892,6 @@ function exportPDF(dateStr) {
   const cards = [
     { label: "TRANSACCIONES", value: String(sales.length), color: BLUE },
     { label: "ARTÍCULOS VENDIDOS", value: String(itemCount), color: AMBER },
-    { label: "ITBIS (18%)", value: money(itbis), color: DARK },
     { label: "INGRESOS", value: money(total), color: GREEN },
   ];
   const gap = 4;
@@ -4987,11 +5045,9 @@ function exportPDF(dateStr) {
   doc.setFont(FONT, "normal");
   doc.setFontSize(9.5);
   doc.setTextColor(...GRAY);
-  doc.text("Subtotal", bx + 5, y + 8);
-  doc.text("ITBIS (18%)", bx + 5, y + 14.5);
+  doc.text("Subtotal", bx + 5, y + 12);
   doc.setTextColor(...DARK);
-  doc.text(money(subtotal), bx + bw - 5, y + 8, { align: "right" });
-  doc.text(money(itbis), bx + bw - 5, y + 14.5, { align: "right" });
+  doc.text(money(subtotal), bx + bw - 5, y + 1, { align: "right" });
 
   doc.setFillColor(...GREEN);
   doc.roundedRect(bx + 3, y + 18.5, bw - 6, 9, 2, 2, "F");

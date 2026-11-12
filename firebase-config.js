@@ -1,4 +1,4 @@
-﻿const firebaseConfig = (typeof window !== 'undefined' && window.__FIREBASE_CONFIG__) || {
+const firebaseConfig = (typeof window !== 'undefined' && window.__FIREBASE_CONFIG__) || {
   apiKey: "AIzaSyAjsNdKlF3asaARhSgdpPKF0QnjPVbeNUY",
   authDomain: "salesstock-pro-652c4.firebaseapp.com",
   projectId: "salesstock-pro-652c4",

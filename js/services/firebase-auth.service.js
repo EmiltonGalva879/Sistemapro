@@ -1,171 +1,171 @@
+
 const FirebaseAuth = {
-  // Map Firebase Auth error codes to user-friendly messages
   _mapError(code) {
     const messages = {
-      'auth/invalid-email': 'Correo electrónico inválido',
+      'auth/invalid-email': 'Correo o usuario inválido',
+      'auth/missing-email': 'Escribe tu correo',
       'auth/user-disabled': 'Esta cuenta ha sido deshabilitada',
-      'auth/user-not-found': 'Usuario no encontrado',
-      'auth/wrong-password': 'Contraseña incorrecta',
-      'auth/invalid-credential': 'Credenciales inválidas',
-      'auth/email-already-in-use': 'Este correo ya está registrado',
-      'auth/weak-password': 'La contraseña es muy débil (mínimo 6 caracteres)',
-      'auth/operation-not-allowed': 'Operación no permitida',
-      'auth/too-many-requests': 'Demasiados intentos. Intente más tarde',
-      'auth/network-request-failed': 'Error de conexión. Verifique su internet',
+      'auth/user-not-found': 'Credenciales incorrectas',
+      'auth/wrong-password': 'Credenciales incorrectas',
+      'auth/invalid-credential': 'Credenciales incorrectas',
+      'auth/email-already-in-use': 'Ese correo o usuario ya está registrado',
+      'auth/weak-password': 'La contraseña es muy débil (mínimo 8 caracteres)',
+      'auth/requires-recent-login': 'Por seguridad, vuelve a iniciar sesión e inténtalo de nuevo',
+      'auth/operation-not-allowed': 'Esta operación no está habilitada en Firebase (Authentication → Método de acceso)',
+      'auth/too-many-requests': 'Demasiados intentos. Espera unos minutos e inténtalo de nuevo',
+      'auth/network-request-failed': 'Error de conexión. Verifica tu internet',
       'auth/popup-closed-by-user': 'Ventana emergente cerrada',
-      'auth/cancelled-popup-request': 'Solicitud cancelada',
+      'auth/cancelled-popup-request': 'Solicitud cancelada'
     };
-    return messages[code] || `Error de autenticación: ${code}`;
+    return messages[code] || ('Error de autenticación: ' + code);
   },
 
-  async register(username, password, licenseKey) {
+  _requireAuth() {
     if (!window.FB_AUTH) throw new Error('Firebase no está configurado. Verifica firebase-config.js');
-    if (!window.App?.Services?.DB) throw new Error('Base de datos no inicializada');
+    // Los correos de Firebase (verificación y restablecimiento) salen en español
+    try { window.FB_AUTH.languageCode = 'es'; } catch (e) {}
+  },
 
-    username = (username || '').trim();
-    if (!username) throw new Error('Nombre de usuario requerido');
-    if (username.length < 3) throw new Error('El usuario debe tener al menos 3 caracteres');
-    if (username.length > 30) throw new Error('Máximo 30 caracteres');
-    if (!/^[a-zA-Z0-9_]+$/.test(username)) throw new Error('Solo letras, números y guión bajo');
+  // Acepta un correo real o un nombre de usuario (cuentas antiguas: usuario@sistema.local)
+  _toEmail(identifier) {
+    const v = String(identifier || '').trim().toLowerCase();
+    return v.includes('@') ? v : v + '@sistema.local';
+  },
 
-    if (!password || password.length < 8) throw new Error('La contraseña debe tener al menos 8 caracteres');
-    if (!licenseKey?.trim()) throw new Error('Clave de licencia requerida');
+  _wrap(e) {
+    if (e && e.code && String(e.code).startsWith('auth/')) {
+      const err = new Error(this._mapError(e.code));
+      err.code = e.code;
+      return err;
+    }
+    return e;
+  },
 
-    const email = username + '@sistema.local';
-
+  // Busca a qué correo pertenece un nombre de usuario (colección "usernames", ver firestore.rules)
+  async _lookupUsername(name) {
+    if (!/^[a-z0-9_]{3,30}$/.test(name) || !window.FB_DB) return null;
     try {
-      const cred = await window.FB_AUTH.createUserWithEmailAndPassword(email, password);
-      const user = cred.user;
-
-      // Wait for auth to propagate
-      await new Promise(r => setTimeout(r, 300));
-
-      await window.App.Services.DB.init();
-
-      // Verify license
-      const licenses = await window.App.Services.DB.get('licenses');
-      const license = licenses.find(l => l.key === licenseKey.trim());
-      if (!license) throw new Error('Clave de licencia inválida');
-      if (license.used) throw new Error('Esta licencia ya fue utilizada');
-
-      // Check if username already exists
-      const users = await window.App.Services.DB.get('users');
-      if (users.find(u => u.username === username)) {
-        throw new Error('Este nombre de usuario ya está registrado');
-      }
-
-      const profile = {
-        id: user.uid,
-        username: username,
-        email: email,
-        role: 'ADMIN',
-        created: new Date().toISOString(),
-        licensed: true,
-        licenseKey: licenseKey.trim(),
-        companyId: String(license.companyId || license.key),
-        createdBy: '1'
-      };
-
-      users.push(profile);
-      await window.App.Services.DB.set('users', users);
-
-      // Mark license as used
-      license.used = true;
-      license.usedBy = user.uid;
-      license.usedAt = new Date().toISOString();
-      await window.App.Services.DB.set('licenses', licenses);
-
-      return profile;
+      const snap = await window.FB_DB.collection('usernames').doc(name).get();
+      const email = snap.exists && snap.data() && snap.data().email;
+      return email ? String(email).toLowerCase() : null;
     } catch (e) {
-      // Clean up Firebase user if DB write failed
-      if (e.code && e.code.startsWith('auth/')) {
-        throw new Error(this._mapError(e.code));
-      }
-      throw e;
+      return null; // sin conexión o sin permiso: se intenta con el usuario interno
     }
   },
 
-  async login(username, password) {
-    if (!window.FB_AUTH) throw new Error('Firebase no está configurado. Verifica firebase-config.js');
-    if (!window.App?.Services?.DB) throw new Error('Base de datos no inicializada');
-
-    username = (username || '').trim();
-    if (!username) throw new Error('Nombre de usuario requerido');
+  // Acepta un correo o un nombre de usuario
+  async login(identifier, password) {
+    this._requireAuth();
+    identifier = (identifier || '').trim();
+    if (!identifier) throw new Error('Usuario o correo requerido');
     if (!password) throw new Error('Contraseña requerida');
-
-    const email = username + '@sistema.local';
-
+    const signIn = (email) => window.FB_AUTH.signInWithEmailAndPassword(email, password);
     try {
-      const cred = await window.FB_AUTH.signInWithEmailAndPassword(email, password);
-      const user = cred.user;
-
-      await new Promise(r => setTimeout(r, 300));
-      await window.App.Services.DB.init();
-
-      const users = await window.App.Services.DB.get('users');
-      let profile = users.find(u => u.email === email);
-
-      if (!profile) {
-        // Create profile if doesn't exist (shouldn't happen normally)
-        profile = {
-          id: user.uid,
-          username: username,
-          email: email,
-          role: 'ADMIN',
-          created: new Date().toISOString(),
-          licensed: false,
-          companyId: user.uid,
-          createdBy: '1'
-        };
-        users.push(profile);
-        await window.App.Services.DB.set('users', users);
+      if (identifier.includes('@')) {
+        return (await signIn(identifier.toLowerCase())).user;
       }
-
-      return profile;
+      const name = identifier.toLowerCase();
+      const synthetic = name + '@sistema.local';
+      const mapped = await this._lookupUsername(name);
+      if (!mapped) return (await signIn(synthetic)).user; // cuenta antigua sin correo
+      try {
+        return (await signIn(mapped)).user;
+      } catch (e) {
+        // Si otra persona ya usa ese nombre con su correo, la cuenta antigua con ese usuario sigue entrando
+        if (e && e.code === 'auth/invalid-credential' && mapped !== synthetic) {
+          return (await signIn(synthetic)).user;
+        }
+        throw e;
+      }
     } catch (e) {
-      if (e.code && e.code.startsWith('auth/')) {
-        throw new Error(this._mapError(e.code));
-      }
-      throw e;
+      throw this._wrap(e);
     }
   },
 
+  // Solo inicia sesión: la licencia y el perfil se resuelven en app.js (loadSession)
   async loginWithGoogle() {
-    if (!window.FB_AUTH) throw new Error('Firebase no está configurado. Verifica firebase-config.js');
-    if (!window.App?.Services?.DB) throw new Error('Base de datos no inicializada');
-
+    this._requireAuth();
     try {
       const provider = new firebase.auth.GoogleAuthProvider();
       const cred = await window.FB_AUTH.signInWithPopup(provider);
-      const user = cred.user;
-
-      await new Promise(r => setTimeout(r, 300));
-      await window.App.Services.DB.init();
-
-      const users = await window.App.Services.DB.get('users');
-      let profile = users.find(u => u.email === user.email);
-
-      if (!profile) {
-        profile = {
-          id: user.uid,
-          username: (user.email || '').split('@')[0],
-          email: user.email,
-          role: 'ADMIN',
-          created: new Date().toISOString(),
-          licensed: false,
-          companyId: user.uid,
-          createdBy: '1'
-        };
-        users.push(profile);
-        await window.App.Services.DB.set('users', users);
-      }
-
-      return profile;
+      return cred.user;
     } catch (e) {
-      if (e.code && e.code.startsWith('auth/')) {
-        throw new Error(this._mapError(e.code));
+      throw this._wrap(e);
+    }
+  },
+
+  // Envía el enlace para crear una contraseña nueva.
+  // Si el correo no existe NO se informa (evita descubrir qué correos están registrados).
+  async sendPasswordReset(email) {
+    this._requireAuth();
+    email = String(email || '').trim().toLowerCase();
+    try {
+      await window.FB_AUTH.sendPasswordResetEmail(email);
+    } catch (e) {
+      if (e && e.code === 'auth/user-not-found') return true;
+      throw this._wrap(e);
+    }
+    return true;
+  },
+
+  async sendVerification() {
+    this._requireAuth();
+    const user = window.FB_AUTH.currentUser;
+    if (!user) throw new Error('No hay una sesión iniciada');
+    try {
+      await user.sendEmailVerification();
+    } catch (e) {
+      throw this._wrap(e);
+    }
+    return true;
+  },
+
+  // Cambia el correo de la cuenta (conserva UID, licencia y datos). El cambio se aplica
+  // cuando la persona abre el enlace que Firebase envía al correo nuevo.
+  async startEmailChange(newEmail, password) {
+    this._requireAuth();
+    const user = window.FB_AUTH.currentUser;
+    if (!user || !user.email) throw new Error('No hay una sesión iniciada');
+    try {
+      const credential = firebase.auth.EmailAuthProvider.credential(user.email, password);
+      await user.reauthenticateWithCredential(credential);
+      await user.verifyBeforeUpdateEmail(String(newEmail || '').trim().toLowerCase());
+    } catch (e) {
+      throw this._wrap(e);
+    }
+    return true;
+  },
+
+  // Vuelve a leer el estado de la cuenta (por ejemplo, después de verificar el correo)
+  async refreshUser() {
+    const user = window.FB_AUTH && window.FB_AUTH.currentUser;
+    if (!user) return null;
+    await user.reload();
+    await user.getIdToken(true);
+    return window.FB_AUTH.currentUser;
+  },
+
+  // Crea una cuenta sin cerrar la sesión del administrador que la está creando
+  async createUserNoSwitch(email, password, opts) {
+    this._requireAuth();
+    let app;
+    try {
+      app = firebase.app('secondary');
+    } catch (e) {
+      app = firebase.initializeApp(firebase.app().options, 'secondary');
+    }
+    const auth = app.auth();
+    try { auth.languageCode = 'es'; } catch (e) {}
+    try {
+      const cred = await auth.createUserWithEmailAndPassword(email, password);
+      const uid = cred.user.uid;
+      if (opts && opts.sendVerification) {
+        try { await cred.user.sendEmailVerification(); } catch (e) { console.warn('[auth] No se pudo enviar la verificación:', e && e.code); }
       }
-      throw e;
+      await auth.signOut();
+      return uid;
+    } catch (e) {
+      throw this._wrap(e);
     }
   },
 
